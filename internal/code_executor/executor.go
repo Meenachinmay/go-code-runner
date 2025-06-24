@@ -18,21 +18,24 @@ type ExecutionResult struct {
 	Error  string
 }
 
-type Service interface {
-	Execute(ctx context.Context, code string, language string) (*ExecutionResult, error)
-}
-
 type service struct {
 	executionTimeout time.Duration
 	logger           *log.Logger
 	imageCache       map[string]bool
+
+	buildCacheDir string
+	modCacheDir   string
 }
 
 func NewService(timeout time.Duration, logger *log.Logger) Service {
+	buildCacheDir, _ := os.MkdirTemp("", "go-build-cache-*")
+	modCache, _ := os.MkdirTemp("", "go-mod-cache-*")
 	return &service{
 		executionTimeout: timeout,
 		logger:           logger,
 		imageCache:       make(map[string]bool),
+		buildCacheDir:    buildCacheDir,
+		modCacheDir:      modCache,
 	}
 }
 
@@ -93,6 +96,8 @@ func (s *service) Execute(ctx context.Context, code string, language string) (*E
 	defer cancel()
 
 	volumeMount := fmt.Sprintf("%s:/app:ro", tempDir)
+	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", s.buildCacheDir)
+	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", s.modCacheDir)
 
 	args := []string{
 		"run", "--rm",
@@ -100,6 +105,8 @@ func (s *service) Execute(ctx context.Context, code string, language string) (*E
 		"--memory", "256m",
 		"--cpus", "0.5",
 		"-v", volumeMount,
+		"-v", cacheMount,
+		"-v", modMount,
 		"-w", "/app",
 		"golang:1.22-alpine",
 		"sh", "-c", fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName),
