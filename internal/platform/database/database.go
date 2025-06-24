@@ -2,31 +2,48 @@ package database
 
 import (
 	"context"
-	"fmt"
-	"time"
-
+	"database/sql"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/lib/pq" // Goose needs the driver registered
+	"github.com/pressly/goose/v3"
+	"log"
+	"path/filepath"
 )
 
+// New creates a new database connection pool
 func New(ctx context.Context, connStr string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse pgx config: %w", err)
+		return nil, err
 	}
 
-	config.MaxConns = 10
-	config.MinConns = 2
-	config.MaxConnIdleTime = 5 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create pgx pool: %w", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return nil, err
 	}
 
 	return pool, nil
+}
+
+// Migrate runs all pending Goose migrations found in dir.
+// It is safe to call on every application start-up.
+func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string, logger *log.Logger) error {
+	// Wrap pgx pool in *sql.DB so Goose can use it.
+	var db *sql.DB = stdlib.OpenDB(*pool.Config().ConnConfig)
+	defer db.Close()
+
+	goose.SetBaseFS(nil) // we read from the filesystem, not embed.FS
+	goose.SetLogger(logger)
+	goose.SetDialect("postgres")
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+
+	if err := goose.UpContext(ctx, db, absDir); err != nil {
+		return err
+	}
+	return nil
 }
