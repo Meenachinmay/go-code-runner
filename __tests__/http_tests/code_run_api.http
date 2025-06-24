@@ -1,0 +1,10 @@
+GET http://localhost:8080/health
+
+### Execute Go Code
+POST http://localhost:8080/api/v1/execute
+Content-Type: application/json
+
+{
+  "language": "go",
+  "code": "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"Hello from GoLand HTTP Client!\") }"
+}
