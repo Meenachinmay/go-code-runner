@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"go-code-runner/internal/models"
+	"go-code-runner/internal/repository"
 )
 
 type ExecutionResult struct {
@@ -22,18 +25,20 @@ type service struct {
 	executionTimeout time.Duration
 	logger           *log.Logger
 	imageCache       map[string]bool
+	repository       repository.Repository
 
 	buildCacheDir string
 	modCacheDir   string
 }
 
-func NewService(timeout time.Duration, logger *log.Logger) Service {
+func NewService(timeout time.Duration, logger *log.Logger, repo repository.Repository) Service {
 	buildCacheDir, _ := os.MkdirTemp("", "go-build-cache-*")
 	modCache, _ := os.MkdirTemp("", "go-mod-cache-*")
 	return &service{
 		executionTimeout: timeout,
 		logger:           logger,
 		imageCache:       make(map[string]bool),
+		repository:       repo,
 		buildCacheDir:    buildCacheDir,
 		modCacheDir:      modCache,
 	}
@@ -64,13 +69,8 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 	s.imageCache[imageName] = true
 }
 
-func (s *service) Execute(ctx context.Context, code string, language string) (*ExecutionResult, error) {
-	overallStart := time.Now()
-	s.logger.Printf("-------------------------------------------------")
-	s.logger.Println("Received new execution request.")
-
-	s.ensureDockerImageAvailable("golang:1.22-alpine")
-
+// executeCode is a helper function that executes code in a Docker container
+func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
 	runID := uuid.New().String()
 	s.logger.Printf("[%s] Creating temp directory...", runID)
 	dirStart := time.Now()
@@ -92,12 +92,30 @@ func (s *service) Execute(ctx context.Context, code string, language string) (*E
 	}
 	s.logger.Printf("[%s] Code written to %s. (took %v)", runID, codePath, time.Since(writeStart))
 
+	// If input is provided, write it to a file
+	inputFile := ""
+	if input != "" {
+		inputFile = filepath.Join(tempDir, "input.txt")
+		if err := os.WriteFile(inputFile, []byte(input), 0644); err != nil {
+			return nil, fmt.Errorf("failed to write input to file: %w", err)
+		}
+		s.logger.Printf("[%s] Input written to %s", runID, inputFile)
+	}
+
 	execCtx, cancel := context.WithTimeout(ctx, s.executionTimeout)
 	defer cancel()
 
 	volumeMount := fmt.Sprintf("%s:/app:ro", tempDir)
 	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", s.buildCacheDir)
 	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", s.modCacheDir)
+
+	// Command to run
+	runCmd := fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName)
+
+	// If input file exists, pipe it to the command
+	if inputFile != "" {
+		runCmd = fmt.Sprintf("cd /app && cat input.txt | GOFLAGS=-mod=readonly go run %s", codeFileName)
+	}
 
 	args := []string{
 		"run", "--rm",
@@ -109,7 +127,7 @@ func (s *service) Execute(ctx context.Context, code string, language string) (*E
 		"-v", modMount,
 		"-w", "/app",
 		"golang:1.22-alpine",
-		"sh", "-c", fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName),
+		"sh", "-c", runCmd,
 	}
 
 	cmd := exec.CommandContext(execCtx, "docker", args...)
@@ -145,8 +163,92 @@ func (s *service) Execute(ctx context.Context, code string, language string) (*E
 		s.logger.Printf("[%s] Command executed successfully.", runID)
 	}
 
-	s.logger.Printf("[%s] Total request processing time: %v", runID, time.Since(overallStart))
+	return result, nil
+}
+
+func (s *service) Execute(ctx context.Context, code string, language string) (*ExecutionResult, error) {
+	overallStart := time.Now()
+	s.logger.Printf("-------------------------------------------------")
+	s.logger.Println("Received new execution request.")
+
+	s.ensureDockerImageAvailable("golang:1.22-alpine")
+
+	result, err := s.executeCode(ctx, code, language, "")
+
+	s.logger.Printf("Total request processing time: %v", time.Since(overallStart))
 	s.logger.Printf("-------------------------------------------------")
 
-	return result, nil
+	return result, err
+}
+
+func (s *service) ExecuteWithTestCases(ctx context.Context, code string, language string, testCases []*models.TestCase) (*models.ExecutionResults, error) {
+	overallStart := time.Now()
+	s.logger.Printf("-------------------------------------------------")
+	s.logger.Println("Received execution request with test cases.")
+
+	s.ensureDockerImageAvailable("golang:1.22-alpine")
+
+	var testResults []models.TestResult
+	success := true
+
+	for _, testCase := range testCases {
+		s.logger.Printf("Running test case %d", testCase.ID)
+
+		result, err := s.executeCode(ctx, code, language, testCase.Input)
+		if err != nil {
+			return nil, err
+		}
+
+		// Clean output (remove trailing newlines)
+		actualOutput := strings.TrimSpace(result.Output)
+		expectedOutput := strings.TrimSpace(testCase.ExpectedOutput)
+
+		// Check if the test passed
+		passed := actualOutput == expectedOutput
+		if !passed {
+			success = false
+		}
+
+		testResult := models.TestResult{
+			TestCaseID:     testCase.ID,
+			Input:          testCase.Input,
+			ExpectedOutput: testCase.ExpectedOutput,
+			ActualOutput:   actualOutput,
+			Error:          result.Error,
+			Passed:         passed,
+		}
+
+		// If the test case is hidden, don't include input and expected output
+		if testCase.IsHidden {
+			testResult.Input = ""
+			testResult.ExpectedOutput = ""
+		}
+
+		testResults = append(testResults, testResult)
+	}
+
+	s.logger.Printf("Total request processing time: %v", time.Since(overallStart))
+	s.logger.Printf("-------------------------------------------------")
+
+	return &models.ExecutionResults{
+		Success:     success,
+		TestResults: testResults,
+	}, nil
+}
+
+// ExecuteForProblem runs code against all test cases for a problem and returns the results
+func (s *service) ExecuteForProblem(ctx context.Context, code string, language string, problemID int) (*models.ExecutionResults, error) {
+	s.logger.Printf("Executing code for problem %d", problemID)
+
+	// Get test cases for the problem
+	testCases, err := s.repository.GetTestCasesByProblemID(ctx, problemID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get test cases for problem %d: %w", problemID, err)
+	}
+
+	if len(testCases) == 0 {
+		return nil, fmt.Errorf("no test cases found for problem %d", problemID)
+	}
+
+	return s.ExecuteWithTestCases(ctx, code, language, testCases)
 }

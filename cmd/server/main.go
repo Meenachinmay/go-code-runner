@@ -8,6 +8,7 @@ import (
 	"go-code-runner/internal/config"
 	"go-code-runner/internal/handler"
 	"go-code-runner/internal/platform/database"
+	"go-code-runner/internal/repository"
 	"log"
 	"os"
 )
@@ -15,25 +16,33 @@ import (
 func main() {
 	logger := log.New(os.Stdout, "CODE-RUNNER: ", log.LstdFlags|log.Lmicroseconds)
 
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		logger.Printf("Warning: Error loading .env file: %v", err)
-	}
+	// 1. Environment ------------------------------------------------------------------
+	_ = godotenv.Load() // .env is optional
 
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Fatalf("Failed to load configuration: %v", err)
+		logger.Fatalf("failed to load configuration: %v", err)
 	}
 
-	dbCtx := context.Background()
-	dbpool, err := database.New(dbCtx, cfg.DBConnStr)
+	// 2. Database connection -----------------------------------------------------------
+	ctx := context.Background()
+	dbpool, err := database.New(ctx, cfg.DBConnStr)
 	if err != nil {
 		logger.Fatalf("failed to connect to database: %v", err)
 	}
 	defer dbpool.Close()
-	logger.Println("Database connection pool established.")
+	logger.Println("database connection pool established")
 
-	executorService := code_executor.NewService(cfg.ExecutionTimeout, logger)
+	// 3. Migrations --------------------------------------------------------------------
+	logger.Println("checking for pending database migrations…")
+	if err := database.Migrate(ctx, dbpool, "db/migrations", logger); err != nil {
+		logger.Fatalf("migration failed: %v", err)
+	}
+	logger.Println("database is up-to-date")
+
+	// 4. Application wiring ------------------------------------------------------------
+	repo := repository.New(dbpool)
+	executorService := code_executor.NewService(cfg.ExecutionTimeout, logger, repo)
 
 	r := gin.Default()
 
@@ -48,11 +57,14 @@ func main() {
 	v1 := r.Group("/api/v1")
 	{
 		v1.POST("/execute", handler.MakeExecuteHandler(executorService))
+		v1.GET("/problems", handler.MakeListProblemsHandler(repo))
+		v1.GET("/problems/:id", handler.MakeGetProblemHandler(repo))
 	}
 
-	serverAddr := ":" + cfg.ServerPort
-	logger.Printf("Starting server on %s", serverAddr)
-	if err := r.Run(serverAddr); err != nil {
-		logger.Fatalf("Failed to run server: %v", err)
+	// 5. Server ------------------------------------------------------------------------
+	addr := ":" + cfg.ServerPort
+	logger.Printf("starting HTTP server on %s", addr)
+	if err := r.Run(addr); err != nil {
+		logger.Fatalf("server error: %v", err)
 	}
 }

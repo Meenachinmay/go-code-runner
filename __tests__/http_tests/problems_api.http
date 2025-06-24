@@ -1,0 +1,40 @@
+### List all problems
+GET http://localhost:8080/api/v1/problems
+Accept: application/json
+
+### Get a problem by ID
+GET http://localhost:8080/api/v1/problems/1
+Accept: application/json
+
+### Get problem ID 2
+GET http://localhost:8080/api/v1/problems/2
+Accept: application/json
+
+### Execute code against test cases for a problem
+POST http://localhost:8080/api/v1/execute
+Content-Type: application/json
+
+{
+  "language": "go",
+  "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  var a, b int\n  fmt.Scan(&a, &b)\n  fmt.Println(a + b)\n}",
+  "problem_id": 1
+}
+
+### Execute code against test cases for problem ID 2 (Reverse String)
+POST http://localhost:8080/api/v1/execute
+Content-Type: application/json
+
+{
+  "language": "go",
+  "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  var s string\n  fmt.Scan(&s)\n  \n  // Convert string to rune slice to handle Unicode characters\n  runes := []rune(s)\n  \n  // Reverse the rune slice\n  for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {\n    runes[i], runes[j] = runes[j], runes[i]\n  }\n  \n  // Convert back to string and print\n  fmt.Println(string(runes))\n}",
+  "problem_id": 2
+}
+
+### Execute code without a problem ID
+POST http://localhost:8080/api/v1/execute
+Content-Type: application/json
+
+{
+  "language": "go",
+  "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  fmt.Println(\"Hello, World!\")\n}"
+}
