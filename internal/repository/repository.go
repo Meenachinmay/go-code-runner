@@ -8,10 +8,12 @@ import (
 )
 
 type Repository interface {
+	CreateProblem(ctx context.Context, p models.Problem) (int, error)
 	GetProblemByID(ctx context.Context, id int) (*models.Problem, error)
 	ListProblems(ctx context.Context) ([]*models.Problem, error)
 
 	GetTestCasesByProblemID(ctx context.Context, problemID int) ([]*models.TestCase, error)
+	CreateTestCase(ctx context.Context, tc models.TestCase) (int, error) // <-- NEW
 }
 
 type repository struct {
@@ -123,4 +125,48 @@ func (r *repository) GetTestCasesByProblemID(ctx context.Context, problemID int)
 	}
 
 	return testCases, nil
+}
+
+func (r *repository) CreateTestCase(ctx context.Context, tc models.TestCase) (int, error) {
+	const q = `
+		INSERT INTO test_cases
+		    (problem_id, input, expected_output, is_hidden, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id;
+	`
+
+	var id int
+	err := r.db.QueryRow(
+		ctx,
+		q,
+		tc.ProblemID,
+		tc.Input,
+		tc.ExpectedOutput,
+		tc.IsHidden,
+		tc.CreatedAt,
+		tc.UpdatedAt,
+	).Scan(&id)
+
+	return id, err
+}
+
+func (r *repository) CreateProblem(ctx context.Context, p models.Problem) (int, error) {
+	const q = `
+		INSERT INTO problems
+(title, description, difficulty, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id;
+    `
+	var id int
+	err := r.db.QueryRow(
+		ctx,
+		q,
+		p.Title,
+		p.Description,
+		p.Difficulty,
+		p.CreatedAt,
+		p.UpdatedAt,
+	).Scan(&id)
+
+	return id, err
 }

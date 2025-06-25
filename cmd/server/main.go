@@ -16,15 +16,13 @@ import (
 func main() {
 	logger := log.New(os.Stdout, "CODE-RUNNER: ", log.LstdFlags|log.Lmicroseconds)
 
-	// 1. Environment ------------------------------------------------------------------
-	_ = godotenv.Load() // .env is optional
+	_ = godotenv.Load()
 
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Fatalf("failed to load configuration: %v", err)
 	}
 
-	// 2. Database connection -----------------------------------------------------------
 	ctx := context.Background()
 	dbpool, err := database.New(ctx, cfg.DBConnStr)
 	if err != nil {
@@ -33,14 +31,12 @@ func main() {
 	defer dbpool.Close()
 	logger.Println("database connection pool established")
 
-	// 3. Migrations --------------------------------------------------------------------
 	logger.Println("checking for pending database migrations…")
 	if err := database.Migrate(ctx, dbpool, "db/migrations", logger); err != nil {
 		logger.Fatalf("migration failed: %v", err)
 	}
 	logger.Println("database is up-to-date")
 
-	// 4. Application wiring ------------------------------------------------------------
 	repo := repository.New(dbpool)
 	executorService := code_executor.NewService(cfg.ExecutionTimeout, logger, repo)
 
@@ -61,7 +57,6 @@ func main() {
 		v1.GET("/problems/:id", handler.MakeGetProblemHandler(repo))
 	}
 
-	// 5. Server ------------------------------------------------------------------------
 	addr := ":" + cfg.ServerPort
 	logger.Printf("starting HTTP server on %s", addr)
 	if err := r.Run(addr); err != nil {
