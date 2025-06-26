@@ -1,0 +1,11 @@
+server_port: "8080"
+
+postgres:
+  host: "postgres"
+  port: 5432
+  user: "postgres"
+  password: "password"
+  db: "code_runner_db"
+  sslmode: "disable"
+
+execution_timeout_seconds: 15
