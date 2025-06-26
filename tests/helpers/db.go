@@ -24,11 +24,11 @@ func NewTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatalf("cannot load .env.test: %v", err)
 	}
 
-	dbUser := getenvDefault("POSTGRES_USER", "postgres")
-	dbPass := getenvDefault("POSTGRES_PASSWORD", "password")
-	dbHost := getenvDefault("POSTGRES_HOST", "localhost")
-	dbPort := getenvDefault("POSTGRES_PORT", "5432")
-	testDB := getenvDefault("POSTGRES_TEST_DB", "code_runner_test_db")
+	dbUser := getenvDefault("POSTGRES_USER", "")
+	dbPass := getenvDefault("POSTGRES_PASSWORD", "")
+	dbHost := getenvDefault("POSTGRES_HOST", "")
+	dbPort := getenvDefault("POSTGRES_PORT", "")
+	testDB := getenvDefault("POSTGRES_TEST_DB", "")
 
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		dbHost, dbPort, dbUser, dbPass, testDB)

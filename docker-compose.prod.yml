@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  api:
+    image: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/go-code-runner:latest
+    container_name: code-runner-api-prod
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENVIRONMENT: prod
+      SERVER_PORT: "8080"
+
+      POSTGRES_HOST: "${POSTGRES_HOST}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+
+      EXECUTION_TIMEOUT_SECONDS: "${EXECUTION_TIMEOUT_SECONDS:-15}"
+
+    depends_on:
+      - postgres
+    networks:
+      - app_net
+
+  postgres:
+    image: postgres:16
+    container_name: code-runner-db-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB:       "${POSTGRES_DB}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_net
+
+volumes:
+  postgres_data:
+
+networks:
+  app_net:
+    driver: bridge

@@ -60,3 +60,10 @@ $(TOOLS_DIR)/$(LINTER):
 	@curl -sSL "https://github.com/golangci/golangci-lint/releases/download/$(LINTER_VERSION)/$(LINTER_FILE)" \
 	  | tar -xz -C $(TOOLS_DIR) --strip-components=1 "golangci-lint-$(shell echo $(LINTER_VERSION) | sed 's/^v//')-$(OS)-$(ARCH)/$(LINTER)"
 	@chmod +x $(TOOLS_DIR)/$(LINTER)
+
+
+docker-run:
+	docker compose -f docker-compose.local.yml up --build
+
+docker-stop:
+	docker compose down && docker compose stop
