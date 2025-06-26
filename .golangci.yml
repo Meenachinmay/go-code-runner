@@ -1,0 +1,68 @@
+# Configuration for golangci-lint
+# See https://golangci-lint.run/usage/configuration/ for details
+
+# Options for analysis running
+run:
+  # Timeout for analysis, e.g. 30s, 5m, default is 1m
+  timeout: 5m
+
+  # Only analyze our project code
+  modules-download-mode: readonly
+
+  # Don't analyze Go standard library
+  go: '1.23'
+
+  # Skip analyzing vendor directory
+  vendor: true
+
+# List of linters to run
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gofmt
+
+# Linter settings
+linters-settings:
+  govet:
+    # Enable all analyzers
+    enable-all: true
+
+# Issues configuration
+issues:
+  # Maximum issues count per one linter
+  max-issues-per-linter: 0
+
+  # Maximum count of issues with the same text
+  max-same-issues: 0
+
+  # Exclude standard library and third-party packages from analysis
+  exclude-use-default: true
+
+  # Exclude directories from analysis
+  exclude-dirs:
+    - vendor
+    - third_party
+    - .tools
+    - ../../../../../usr/local/go/src
+    - ../../pkg/mod
+
+  # Exclude specific issues by regexp
+  exclude:
+    - "Error return value of .((os\\.)?std(out|err)\\..*|.*Close|.*Flush|os\\.Remove(All)?|.*printf?|os\\.(Un)?Setenv). is not checked"
+
+  # Exclude specific rules for specific paths
+  exclude-rules:
+    # Exclude typecheck errors in dependencies
+    - path: '(.*)/pkg/mod/.*'
+      linters:
+        - typecheck
+    - path: '(.*)/usr/local/go/src/.*'
+      linters:
+        - typecheck

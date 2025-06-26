@@ -1,0 +1,121 @@
+package helpers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/joho/godotenv"
+	_ "github.com/pressly/goose/v3"
+
+	"go-code-runner/internal/platform/database"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func NewTestDB(t *testing.T) (*pgxpool.Pool, func()) {
+	t.Helper()
+
+	if err := loadTestDotEnv(); err != nil {
+		t.Fatalf("cannot load .env.test: %v", err)
+	}
+
+	dbUser := getenvDefault("POSTGRES_USER", "postgres")
+	dbPass := getenvDefault("POSTGRES_PASSWORD", "password")
+	dbHost := getenvDefault("POSTGRES_HOST", "localhost")
+	dbPort := getenvDefault("POSTGRES_PORT", "5432")
+	testDB := getenvDefault("POSTGRES_TEST_DB", "code_runner_test_db")
+
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		dbHost, dbPort, dbUser, dbPass, testDB)
+
+	pool, err := database.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect test db: %v", err)
+	}
+
+	logger := log.New(os.Stdout, "TEST-MIGRATE: ", log.LstdFlags|log.Lmicroseconds)
+	migrationsDir, err := findMigrationsDir()
+
+	if err := database.Migrate(context.Background(), pool, migrationsDir, logger); err != nil {
+		pool.Close()
+		t.Fatalf("migrate test db: %v", err)
+	}
+
+	cleanup := func() {
+		pool.Close()
+	}
+
+	return pool, cleanup
+}
+
+func getenvDefault(key, def string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+func isDuplicateDatabase(err error) bool {
+	const pgDuplicateDatabaseCode = "42P04"
+	type pgErr interface {
+		Code() string
+	}
+	if e, ok := err.(pgErr); ok {
+		return e.Code() == pgDuplicateDatabaseCode
+	}
+	return false
+}
+
+func loadTestDotEnv() error {
+	const file = ".env.test"
+
+	// Start where the `go test` process is running.
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	for {
+		envPath := filepath.Join(dir, file)
+		if _, statErr := os.Stat(envPath); statErr == nil {
+			// Found it → load and return
+			return godotenv.Load(envPath)
+		}
+
+		// Reached filesystem root without success?
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return errors.New(".env.test not found in working directory or any parent directory")
+}
+
+func findMigrationsDir() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		candidate := filepath.Join(dir, "db", "migrations")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return "", errors.New("migrations directory not found in working directory or any parent directory")
+}
