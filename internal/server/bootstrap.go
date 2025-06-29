@@ -9,9 +9,10 @@ import (
 
 	"go-code-runner/internal/code_executor"
 	"go-code-runner/internal/config"
-	_ "go-code-runner/internal/handler"
+	"go-code-runner/internal/handler"
 	"go-code-runner/internal/platform/database"
 	"go-code-runner/internal/repository"
+	"go-code-runner/internal/service/company"
 )
 
 // Run boot-straps every dependency, starts migrations and launches the HTTP server.
@@ -53,11 +54,13 @@ func Run() {
 	// -----------------------------------------------------------------
 	repo := repository.New(dbpool)
 	executorService := code_executor.NewService(cfg.ExecutionTimeout, logger, repo)
+	companyService := company.New(repo)
+	companyHandler := handler.NewCompanyHandler(companyService)
 
 	// -----------------------------------------------------------------
 	// 4. HTTP router + handlers
 	// -----------------------------------------------------------------
-	r := NewRouter(dbpool, repo, executorService)
+	r := NewRouter(dbpool, repo, executorService, companyHandler)
 
 	addr := ":" + cfg.ServerPort
 	logger.Printf("starting HTTP server on %s", addr)

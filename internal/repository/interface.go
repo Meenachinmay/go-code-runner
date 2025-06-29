@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"go-code-runner/internal/repository/company"
 	"go-code-runner/internal/repository/problems"
 	"go-code-runner/internal/repository/test_cases"
 
@@ -11,12 +12,14 @@ import (
 type Repository interface {
 	problems.ProblemRepository
 	test_cases.TestCaseRepository
+	company.Repository
 }
 
 // repository struct implements the Repository interface
 type repository struct {
 	problems.ProblemRepository
 	test_cases.TestCaseRepository
+	company.Repository
 }
 
 // New creates a new repository instance
@@ -24,5 +27,6 @@ func New(db *pgxpool.Pool) Repository {
 	return &repository{
 		ProblemRepository:  problems.NewProblemRepository(db),
 		TestCaseRepository: test_cases.NewTestCaseRepository(db),
+		Repository:         company.New(db),
 	}
 }
