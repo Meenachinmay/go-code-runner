@@ -23,6 +23,8 @@ RUN go build -o /out/server ./cmd/server
 FROM golang:1.23.5-alpine AS runner
 WORKDIR /app
 
+RUN apk add --no-cache docker-cli
+
 # Copy binary (+0.0 MB layer if unchanged) and runtime assets
 COPY --from=builder /out/server               ./server
 COPY --from=builder /src/internal/config      ./internal/config

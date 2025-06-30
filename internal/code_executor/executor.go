@@ -29,18 +29,29 @@ type service struct {
 
 	buildCacheDir string
 	modCacheDir   string
+	hostTempDir   string
 }
 
 func NewService(timeout time.Duration, logger *log.Logger, repo repository.Repository) Service {
-	buildCacheDir, _ := os.MkdirTemp("", "go-build-cache-*")
-	modCache, _ := os.MkdirTemp("", "go-mod-cache-*")
+	buildCacheDir := "/tmp/runbox/go-build-cache"
+	modCacheDir := "/tmp/runbox/go-mod-cache"
+
+	os.MkdirAll(buildCacheDir, 0755)
+	os.MkdirAll(modCacheDir, 0755)
+
+	hostTempDir := os.Getenv("HOST_TEMP_DIR")
+	if hostTempDir == "" {
+		hostTempDir = "/tmp/runbox" // fallback
+	}
+
 	return &service{
 		executionTimeout: timeout,
 		logger:           logger,
 		imageCache:       make(map[string]bool),
 		repository:       repo,
 		buildCacheDir:    buildCacheDir,
-		modCacheDir:      modCache,
+		modCacheDir:      modCacheDir,
+		hostTempDir:      hostTempDir,
 	}
 }
 
@@ -75,8 +86,14 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	s.logger.Printf("[%s] Creating temp directory...", runID)
 	dirStart := time.Now()
 
-	tempDir, err := os.MkdirTemp("", "runbox-"+runID+"-*")
-	if err != nil {
+	// Use /tmp/runbox as base directory which is mounted as volume
+	baseDir := "/tmp/runbox"
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create base temp dir: %w", err)
+	}
+
+	tempDir := filepath.Join(baseDir, "runbox-"+runID)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
@@ -105,9 +122,20 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	execCtx, cancel := context.WithTimeout(ctx, s.executionTimeout)
 	defer cancel()
 
-	volumeMount := fmt.Sprintf("%s:/app:ro", tempDir)
-	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", s.buildCacheDir)
-	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", s.modCacheDir)
+	// Calculate the host path for the temp directory
+	hostPath := strings.Replace(tempDir, "/tmp/runbox", s.hostTempDir, 1)
+	volumeMount := fmt.Sprintf("%s:/app", hostPath)
+
+	// Also update cache paths to use host paths
+	hostBuildCacheDir := strings.Replace(s.buildCacheDir, "/tmp/runbox", s.hostTempDir, 1)
+	hostModCacheDir := strings.Replace(s.modCacheDir, "/tmp/runbox", s.hostTempDir, 1)
+
+	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir)
+	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir)
+
+	// Log the actual paths being used
+	s.logger.Printf("[%s] Container temp dir: %s", runID, tempDir)
+	s.logger.Printf("[%s] Host mount path: %s", runID, hostPath)
 
 	// Command to run
 	runCmd := fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName)
@@ -139,7 +167,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	s.logger.Printf("[%s] Executing docker command: docker %v", runID, args)
 	dockerStart := time.Now()
 
-	err = cmd.Run()
+	err := cmd.Run()
 
 	dockerDuration := time.Since(dockerStart)
 	s.logger.Printf("[%s] Docker command finished. (took %v)", runID, dockerDuration)
