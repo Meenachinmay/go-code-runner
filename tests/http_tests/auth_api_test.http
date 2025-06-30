@@ -1,0 +1,42 @@
+### Register a new company
+POST http://localhost:8080/api/v1/companies/register
+Content-Type: application/json
+
+{
+  "name": "Test Company",
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+### Login with company credentials
+POST http://localhost:8080/api/v1/companies/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+> {%
+    console.log("Login response body:", response.body);
+
+    // Attempt to get the token
+    let token = response.body.token;
+
+    if (token) {
+        console.log("Captured token:", token);
+        client.global.set("accessToken", token);
+        console.log("'accessToken' has been set globally for the session.");
+    } else {
+        console.error("ERROR: 'token' not found in the response body!");
+    }
+%}
+
+### Login with invalid credentials
+POST http://localhost:8080/api/v1/companies/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "wrongpassword"
+}

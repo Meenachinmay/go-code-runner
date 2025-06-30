@@ -12,6 +12,10 @@ services:
       - .env
     environment:
       APP_ENVIRONMENT: local
+      HOST_TEMP_DIR: ${PWD}/temp_code_files
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./temp_code_files:/tmp/runbox
     depends_on:
       - postgres
     networks:
