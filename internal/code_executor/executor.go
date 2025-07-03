@@ -39,9 +39,9 @@ func NewService(timeout time.Duration, logger *log.Logger, repo repository.Repos
 	os.MkdirAll(buildCacheDir, 0755)
 	os.MkdirAll(modCacheDir, 0755)
 
-	hostTempDir := os.Getenv("HOST_TEMP_DIR")
+	hostTempDir := os.Getenv("HOST_TEMP_DIR") // TODO: Throw error if ENV is not set for HOST_TEMP_DIR
 	if hostTempDir == "" {
-		hostTempDir = "/tmp/runbox" // fallback
+		hostTempDir = "/tmp/runbox"
 	}
 
 	return &service{
@@ -80,39 +80,36 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 	s.imageCache[imageName] = true
 }
 
-// executeCode is a helper function that executes code in a Docker container
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
 	runID := uuid.New().String()
 	s.logger.Printf("[%s] Creating temp directory...", runID)
 	dirStart := time.Now()
 
-	// Use /tmp/runbox as base directory which is mounted as volume
-	baseDir := "/tmp/runbox"
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
+	apiContainerBaseDir := "/tmp/runbox"
+	if err := os.MkdirAll(apiContainerBaseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create base temp dir: %w", err)
 	}
 
-	tempDir := filepath.Join(baseDir, "runbox-"+runID)
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
+	apiContainerTempDir := filepath.Join(apiContainerBaseDir, "runbox-"+runID)
+	if err := os.MkdirAll(apiContainerTempDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
-	s.logger.Printf("[%s] Temp directory created at %s. (took %v)", runID, tempDir, time.Since(dirStart))
+	defer os.RemoveAll(apiContainerTempDir)
+	s.logger.Printf("[%s] Temp directory created at %s. (took %v)", runID, apiContainerTempDir, time.Since(dirStart))
 
 	s.logger.Printf("[%s] Writing code to file...", runID)
 	writeStart := time.Now()
 
 	codeFileName := "main.go"
-	codePath := filepath.Join(tempDir, codeFileName)
+	codePath := filepath.Join(apiContainerTempDir, codeFileName)
 	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write code to file: %w", err)
 	}
 	s.logger.Printf("[%s] Code written to %s. (took %v)", runID, codePath, time.Since(writeStart))
 
-	// If input is provided, write it to a file
 	inputFile := ""
 	if input != "" {
-		inputFile = filepath.Join(tempDir, "input.txt")
+		inputFile = filepath.Join(apiContainerTempDir, "input.txt")
 		if err := os.WriteFile(inputFile, []byte(input), 0644); err != nil {
 			return nil, fmt.Errorf("failed to write input to file: %w", err)
 		}
@@ -122,25 +119,20 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	execCtx, cancel := context.WithTimeout(ctx, s.executionTimeout)
 	defer cancel()
 
-	// Calculate the host path for the temp directory
-	hostPath := strings.Replace(tempDir, "/tmp/runbox", s.hostTempDir, 1)
+	hostPath := strings.Replace(apiContainerTempDir, apiContainerBaseDir, s.hostTempDir, 1)
 	volumeMount := fmt.Sprintf("%s:/app", hostPath)
 
-	// Also update cache paths to use host paths
 	hostBuildCacheDir := strings.Replace(s.buildCacheDir, "/tmp/runbox", s.hostTempDir, 1)
 	hostModCacheDir := strings.Replace(s.modCacheDir, "/tmp/runbox", s.hostTempDir, 1)
 
 	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir)
 	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir)
 
-	// Log the actual paths being used
-	s.logger.Printf("[%s] Container temp dir: %s", runID, tempDir)
+	s.logger.Printf("[%s] Container temp dir: %s", runID, apiContainerTempDir)
 	s.logger.Printf("[%s] Host mount path: %s", runID, hostPath)
 
-	// Command to run
 	runCmd := fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName)
 
-	// If input file exists, pipe it to the command
 	if inputFile != "" {
 		runCmd = fmt.Sprintf("cd /app && cat input.txt | GOFLAGS=-mod=readonly go run %s", codeFileName)
 	}
@@ -227,11 +219,9 @@ func (s *service) ExecuteWithTestCases(ctx context.Context, code string, languag
 			return nil, err
 		}
 
-		// Clean output (remove trailing newlines)
 		actualOutput := strings.TrimSpace(result.Output)
 		expectedOutput := strings.TrimSpace(testCase.ExpectedOutput)
 
-		// Check if the test passed
 		passed := actualOutput == expectedOutput
 		if !passed {
 			success = false
@@ -246,7 +236,6 @@ func (s *service) ExecuteWithTestCases(ctx context.Context, code string, languag
 			Passed:         passed,
 		}
 
-		// If the test case is hidden, don't include input and expected output
 		if testCase.IsHidden {
 			testResult.Input = ""
 			testResult.ExpectedOutput = ""
@@ -264,11 +253,9 @@ func (s *service) ExecuteWithTestCases(ctx context.Context, code string, languag
 	}, nil
 }
 
-// ExecuteForProblem runs code against all test cases for a problem and returns the results
 func (s *service) ExecuteForProblem(ctx context.Context, code string, language string, problemID int) (*models.ExecutionResults, error) {
 	s.logger.Printf("Executing code for problem %d", problemID)
 
-	// Get test cases for the problem
 	testCases, err := s.repository.GetTestCasesByProblemID(ctx, problemID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get test cases for problem %d: %w", problemID, err)
