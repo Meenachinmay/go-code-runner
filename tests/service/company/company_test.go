@@ -79,6 +79,16 @@ func (m *mockRepository) UpdateClientID(ctx context.Context, id int, clientID st
 	return nil
 }
 
+func (m *mockRepository) GetCompanyByAPIKey(ctx context.Context, apiKey string) (*models.Company, error) {
+	// Iterate through companies to find one with matching API key
+	for _, company := range m.companies {
+		if company.APIKey != nil && *company.APIKey == apiKey {
+			return company, nil
+		}
+	}
+	return nil, errors.New("company not found")
+}
+
 func TestRegister(t *testing.T) {
 	repo := newMockRepository()
 	service := svc.New(repo)

@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"go-code-runner/internal/models"
-	"go-code-runner/internal/repository"
+	testcaserepo "go-code-runner/internal/repository/test_cases"
 )
 
 type ExecutionResult struct {
@@ -25,14 +25,14 @@ type service struct {
 	executionTimeout time.Duration
 	logger           *log.Logger
 	imageCache       map[string]bool
-	repository       repository.Repository
+	repository       testcaserepo.TestCaseRepository
 
 	buildCacheDir string
 	modCacheDir   string
 	hostTempDir   string
 }
 
-func NewService(timeout time.Duration, logger *log.Logger, repo repository.Repository) Service {
+func NewService(timeout time.Duration, logger *log.Logger, repo testcaserepo.TestCaseRepository) Service {
 	buildCacheDir := "/tmp/runbox/go-build-cache"
 	modCacheDir := "/tmp/runbox/go-mod-cache"
 

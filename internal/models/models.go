@@ -51,3 +51,27 @@ type Company struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
+
+type CodingTest struct {
+	ID                   string     `json:"id" db:"id"`
+	CompanyID            int        `json:"company_id" db:"company_id"`
+	ProblemID            int        `json:"problem_id" db:"problem_id"`
+	CandidateName        *string    `json:"candidate_name" db:"candidate_name"`
+	CandidateEmail       *string    `json:"candidate_email" db:"candidate_email"`
+	Status               string     `json:"status" db:"status"` // pending, started, completed, expired
+	StartedAt            *time.Time `json:"started_at" db:"started_at"`
+	CompletedAt          *time.Time `json:"completed_at" db:"completed_at"`
+	ExpiresAt            time.Time  `json:"expires_at" db:"expires_at"`
+	TestDurationMinutes  int        `json:"test_duration_minutes" db:"test_duration_minutes"`
+	SubmissionCode       *string    `json:"submission_code" db:"submission_code"`
+	PassedPercentage     *int       `json:"passed_percentage" db:"passed_percentage"`
+	CreatedAt            time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at" db:"updated_at"`
+}
+
+const (
+	TestStatusPending   = "pending"
+	TestStatusStarted   = "started"
+	TestStatusCompleted = "completed"
+	TestStatusExpired   = "expired"
+)
