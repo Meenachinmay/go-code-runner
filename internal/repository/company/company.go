@@ -12,6 +12,31 @@ type repo struct{ db *pgxpool.Pool }
 
 func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
 
+func (r *repo) GetCompanyByAPIKey(ctx context.Context, apiKey string) (*models.Company, error) {
+	query := `
+        SELECT id, name, email, password_hash, api_key, client_id, created_at, updated_at
+        FROM companies
+        WHERE api_key = $1`
+
+	var company models.Company
+	err := r.db.QueryRow(ctx, query, apiKey).Scan(
+		&company.ID,
+		&company.Name,
+		&company.Email,
+		&company.PasswordHash,
+		&company.APIKey,
+		&company.ClientID,
+		&company.CreatedAt,
+		&company.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &company, nil
+}
+
 func (r *repo) Create(ctx context.Context, c *models.Company) (*models.Company, error) {
 	query := `INSERT INTO companies (name,email,password_hash) VALUES ($1,$2,$3) RETURNING id,created_at,updated_at`
 	err := r.db.QueryRow(ctx, query, c.Name, c.Email, c.PasswordHash).

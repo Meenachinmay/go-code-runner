@@ -1,0 +1,177 @@
+### Login with company credentials
+# This request will automatically capture the token for use in subsequent requests
+POST http://localhost:8080/api/v1/companies/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+> {%
+    console.log("Login response body:", response.body);
+
+    // Attempt to get the token
+    let token = response.body.token;
+
+    if (token) {
+        console.log("Captured token:", token);
+        client.global.set("accessToken", token);
+        console.log("'accessToken' has been set globally for the session.");
+    } else {
+        console.error("ERROR: 'token' not found in the response body!");
+    }
+%}
+
+### Generate a client ID
+# Uses the token captured from the login response
+POST http://localhost:8080/api/v1/companies/client-id
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+> {%
+    console.log("Client ID response body:", response.body);
+
+    // Attempt to get the client_id
+    let clientId = response.body.client_id;
+
+    if (clientId) {
+        console.log("Captured client_id:", clientId);
+        client.global.set("clientId", clientId);
+        console.log("'clientId' has been set globally for the session.");
+    } else {
+        console.error("ERROR: 'client_id' not found in the response body!");
+    }
+%}
+
+### Generate an API key
+# Uses the token captured from the login response
+POST http://localhost:8080/api/v1/companies/api-key
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+> {%
+    console.log("API key response body:", response.body);
+
+    // Attempt to get the api_key
+    let apiKey = response.body.api_key;
+
+    if (apiKey) {
+        console.log("Captured api_key:", apiKey);
+        client.global.set("apiKey", apiKey);
+        console.log("'apiKey' has been set globally for the session.");
+    } else {
+        console.error("ERROR: 'api_key' not found in the response body!");
+    }
+%}
+
+### Generate a coding test with problem ID 1
+# Uses the API key captured from the previous response
+POST http://localhost:8080/api/v1/companies/tests/generate
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "problem_id": 1,
+  "expires_in_hours": 24
+}
+
+> {%
+    console.log("Generate test response body:", response.body);
+
+    // Attempt to get the test_id
+    let test = response.body.test;
+    let testId = test ? test.id : null;
+
+    if (testId) {
+        console.log("Captured test_id:", testId);
+        client.global.set("testId", testId);
+        console.log("'testId' has been set globally for the session.");
+    } else {
+        console.error("ERROR: 'test.id' not found in the response body!");
+    }
+%}
+
+### Verify the test
+GET http://localhost:8080/api/v1/tests/{{testId}}/verify
+Content-Type: application/json
+
+> {%
+    console.log("Verify test response body:", response.body);
+
+    // Verify that the test exists and is in pending status
+    let status = response.body.status;
+    let problemId = response.body.problem_id;
+
+    console.log("Test status:", status);
+    console.log("Problem ID:", problemId);
+%}
+
+### Start the test as a candidate
+POST http://localhost:8080/api/v1/tests/{{testId}}/start
+Content-Type: application/json
+
+{
+  "candidate_name": "John Doe",
+  "candidate_email": "john.doe@example.com"
+}
+
+> {%
+    console.log("Start test response body:", response.body);
+
+    // Verify that the test started successfully
+    let message = response.body.message;
+
+    console.log("Start test message:", message);
+%}
+
+### Execute code for the test (Two Sum problem)
+POST http://localhost:8080/api/v1/execute
+Content-Type: application/json
+
+{
+  "language": "go",
+  "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  var a, b int\n  fmt.Scan(&a, &b)\n  fmt.Println(a + b)\n}",
+  "problem_id": 1
+}
+
+> {%
+    console.log("Execute code response body:", response.body);
+
+    // Check if the code execution was successful
+    let success = response.body.success;
+    let testResults = response.body.test_results;
+
+    console.log("Code execution success:", success);
+
+    // Calculate the passed percentage
+    let passedCount = 0;
+    if (testResults) {
+        for (let i = 0; i < testResults.length; i++) {
+            if (testResults[i].passed) {
+                passedCount++;
+            }
+        }
+
+        let passedPercentage = Math.round((passedCount / testResults.length) * 100);
+        console.log("Passed percentage:", passedPercentage);
+        client.global.set("passedPercentage", passedPercentage);
+    }
+%}
+
+### Submit the test with passed percentage
+POST http://localhost:8080/api/v1/tests/{{testId}}/submit
+Content-Type: application/json
+
+{
+  "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  var a, b int\n  fmt.Scan(&a, &b)\n  fmt.Println(a + b)\n}",
+  "passed_percentage": {{passedPercentage}}
+}
+
+> {%
+    console.log("Submit test response body:", response.body);
+
+    let message = response.body.message;
+
+    console.log("Submit test message:", message);
+%}

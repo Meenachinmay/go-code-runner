@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"go-code-runner/internal/repository"
+	"go-code-runner/internal/service/coding_test"
+	"go-code-runner/internal/service/problems"
 	"log"
 	"os"
 
@@ -10,8 +13,8 @@ import (
 	"go-code-runner/internal/code_executor"
 	"go-code-runner/internal/config"
 	"go-code-runner/internal/handler"
+	"go-code-runner/internal/middleware"
 	"go-code-runner/internal/platform/database"
-	"go-code-runner/internal/repository"
 	"go-code-runner/internal/service/company"
 )
 
@@ -56,11 +59,19 @@ func Run() {
 	executorService := code_executor.NewService(cfg.ExecutionTimeout, logger, repo)
 	companyService := company.New(repo)
 	companyHandler := handler.NewCompanyHandler(companyService)
+	problemService := problems.New(repo)
+	codingTestService := coding_test.New(repo, repo, repo, "http://localhost:5173") // Frontend URL
+	codingTestHandler := handler.NewCodingTestHandler(codingTestService)
 
 	// -----------------------------------------------------------------
-	// 4. HTTP router + handlers
+	// 4. Initialize middleware
 	// -----------------------------------------------------------------
-	r := NewRouter(dbpool, repo, executorService, companyHandler)
+	middleware.InitAPIKeyAuth(dbpool)
+
+	// -----------------------------------------------------------------
+	// 5. HTTP router + handlers
+	// -----------------------------------------------------------------
+	r := NewRouter(dbpool, problemService, executorService, companyHandler, codingTestHandler)
 
 	addr := ":" + cfg.ServerPort
 	logger.Printf("starting HTTP server on %s", addr)

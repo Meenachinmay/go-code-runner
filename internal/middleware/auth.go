@@ -53,20 +53,3 @@ func JWTAuth() gin.HandlerFunc {
 		}
 	}
 }
-
-func APIKeyAuth() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		apiKey := c.GetHeader("X-API-Key")
-		if apiKey == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "API key is required"})
-			c.Abort()
-			return
-		}
-
-		// TODO: Validate the API key against the database
-		// This would require injecting the company repository into the middleware
-		// For now, we'll just continue the request
-
-		c.Next()
-	}
-}

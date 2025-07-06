@@ -301,4 +301,52 @@ func TestCompanyRepository(t *testing.T) {
 			t.Error("expected error when updating client ID for non-existent company, got nil")
 		}
 	})
+
+	t.Run("GetCompanyByAPIKey", func(t *testing.T) {
+		testCompany := &models.Company{
+			Name:         "API Key Auth Company",
+			Email:        uniqueEmail("api-key-auth"),
+			PasswordHash: "hashed_password",
+		}
+
+		createdCompany, err := repo.Create(context.Background(), testCompany)
+		if err != nil {
+			t.Fatalf("failed to create company for GetCompanyByAPIKey test: %v", err)
+		}
+
+		apiKey := fmt.Sprintf("test-api-key-auth-%d", time.Now().UnixNano())
+		err = repo.UpdateAPIKey(context.Background(), createdCompany.ID, apiKey)
+		if err != nil {
+			t.Fatalf("failed to update API key: %v", err)
+		}
+
+		// Retrieve the company by API key
+		retrievedCompany, err := repo.GetCompanyByAPIKey(context.Background(), apiKey)
+		if err != nil {
+			t.Fatalf("failed to get company by API key: %v", err)
+		}
+
+		if retrievedCompany.ID != createdCompany.ID {
+			t.Errorf("expected ID %d, got %d", createdCompany.ID, retrievedCompany.ID)
+		}
+		if retrievedCompany.Name != testCompany.Name {
+			t.Errorf("expected Name %q, got %q", testCompany.Name, retrievedCompany.Name)
+		}
+		if retrievedCompany.Email != testCompany.Email {
+			t.Errorf("expected Email %q, got %q", testCompany.Email, retrievedCompany.Email)
+		}
+
+		if retrievedCompany.APIKey == nil {
+			t.Fatal("expected APIKey to be set, got nil")
+		}
+		if *retrievedCompany.APIKey != apiKey {
+			t.Errorf("expected APIKey %q, got %q", apiKey, *retrievedCompany.APIKey)
+		}
+
+		// Test getting a company with a non-existent API key
+		_, err = repo.GetCompanyByAPIKey(context.Background(), "non-existent-api-key")
+		if err == nil {
+			t.Error("expected error when getting company with non-existent API key, got nil")
+		}
+	})
 }

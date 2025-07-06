@@ -2,7 +2,7 @@ package handler
 
 import (
 	"go-code-runner/internal/models"
-	"go-code-runner/internal/repository"
+	"go-code-runner/internal/service/problems"
 	"net/http"
 	"strconv"
 
@@ -10,7 +10,7 @@ import (
 )
 
 // MakeGetProblemHandler creates a handler for retrieving a problem by ID
-func MakeGetProblemHandler(repo repository.Repository) gin.HandlerFunc {
+func MakeGetProblemHandler(problemService problems.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Parse problem ID from URL
 		idStr := c.Param("id")
@@ -23,8 +23,8 @@ func MakeGetProblemHandler(repo repository.Repository) gin.HandlerFunc {
 			return
 		}
 
-		// Get problem from repository
-		problem, err := repo.GetProblemByID(c.Request.Context(), id)
+		// Get problem from service
+		problem, err := problemService.GetProblemByID(c.Request.Context(), id)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
@@ -34,7 +34,7 @@ func MakeGetProblemHandler(repo repository.Repository) gin.HandlerFunc {
 		}
 
 		// Get test cases for the problem (only non-hidden ones)
-		testCases, err := repo.GetTestCasesByProblemID(c.Request.Context(), id)
+		testCases, err := problemService.GetTestCasesByProblemID(c.Request.Context(), id)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
@@ -61,10 +61,10 @@ func MakeGetProblemHandler(repo repository.Repository) gin.HandlerFunc {
 }
 
 // MakeListProblemsHandler creates a handler for listing all problems
-func MakeListProblemsHandler(repo repository.Repository) gin.HandlerFunc {
+func MakeListProblemsHandler(problemService problems.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get all problems from repository
-		problems, err := repo.ListProblems(c.Request.Context())
+		// Get all problems from service
+		problems, err := problemService.ListProblems(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
