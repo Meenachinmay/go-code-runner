@@ -18,8 +18,6 @@ import (
 	"go-code-runner/internal/service/company"
 )
 
-// Run boot-straps every dependency, starts migrations and launches the HTTP server.
-// It is the old main() logic extracted into a reusable unit.
 func Run() {
 	// -----------------------------------------------------------------
 	// 0. logger + env
@@ -60,7 +58,7 @@ func Run() {
 	companyService := company.New(repo)
 	companyHandler := handler.NewCompanyHandler(companyService)
 	problemService := problems.New(repo)
-	codingTestService := coding_test.New(repo, repo, repo, "http://localhost:5173") // Frontend URL
+	codingTestService := coding_test.New(repo, repo, repo, "http://localhost:5173")
 	codingTestHandler := handler.NewCodingTestHandler(codingTestService)
 
 	// -----------------------------------------------------------------

@@ -25,7 +25,6 @@ func APIKeyAuth() gin.HandlerFunc {
 			return
 		}
 
-		// Validate API key and get company
 		company, err := companyRepo.GetCompanyByAPIKey(c.Request.Context(), apiKey)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
@@ -33,7 +32,6 @@ func APIKeyAuth() gin.HandlerFunc {
 			return
 		}
 
-		// Set company info in context
 		c.Set("company_id", company.ID)
 		c.Set("company", company)
 		c.Next()

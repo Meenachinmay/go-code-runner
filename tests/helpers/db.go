@@ -75,7 +75,6 @@ func isDuplicateDatabase(err error) bool {
 func loadTestDotEnv() error {
 	const file = ".env.test"
 
-	// Start where the `go test` process is running.
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
@@ -88,7 +87,6 @@ func loadTestDotEnv() error {
 			return godotenv.Load(envPath)
 		}
 
-		// Reached filesystem root without success?
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			break

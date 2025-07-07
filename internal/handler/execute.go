@@ -42,11 +42,9 @@ func MakeExecuteHandler(executorService code_executor.Service) gin.HandlerFunc {
 			return
 		}
 
-		// If a problem ID is provided, execute against test cases
 		if req.ProblemID > 0 {
 			log.Printf("Executing code for problem ID: %d", req.ProblemID)
 
-			// Execute code against test cases for the problem
 			results, err := executorService.ExecuteForProblem(c.Request.Context(), req.Code, req.Language, req.ProblemID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, ExecuteResponse{
@@ -56,7 +54,6 @@ func MakeExecuteHandler(executorService code_executor.Service) gin.HandlerFunc {
 				return
 			}
 
-			// Return the test results
 			c.JSON(http.StatusOK, ExecuteResponse{
 				Success:     results.Success,
 				TestResults: results.TestResults,
@@ -64,7 +61,6 @@ func MakeExecuteHandler(executorService code_executor.Service) gin.HandlerFunc {
 			return
 		}
 
-		// Otherwise, execute normally
 		result, err := executorService.Execute(c.Request.Context(), req.Code, req.Language)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, ExecuteResponse{

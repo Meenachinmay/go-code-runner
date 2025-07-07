@@ -32,7 +32,6 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string, logger *log.Lo
 	goosev3.SetBaseFS(nil) 
 	goosev3.SetLogger(logger)
 
-	// Don't use dbconf.yml, use the connection from the pool directly
 	if err := goosev3.SetDialect("postgres"); err != nil {
 		return err
 	}

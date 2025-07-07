@@ -207,7 +207,6 @@ func TestCompanyRepository(t *testing.T) {
 			t.Errorf("expected ClientID %q, got %q", clientID, *retrievedCompany.ClientID)
 		}
 
-		// Test getting a company with a non-existent ID
 		_, err = repo.GetByID(context.Background(), -1)
 		if err == nil {
 			t.Error("expected error when getting company with non-existent ID, got nil")
@@ -215,33 +214,28 @@ func TestCompanyRepository(t *testing.T) {
 	})
 
 	t.Run("UpdateAPIKey", func(t *testing.T) {
-		// Create a test company
 		testCompany := &models.Company{
 			Name:         "API Key Company",
 			Email:        uniqueEmail("api-key"),
 			PasswordHash: "hashed_password",
 		}
 
-		// Create the company in the database
 		createdCompany, err := repo.Create(context.Background(), testCompany)
 		if err != nil {
 			t.Fatalf("failed to create company for UpdateAPIKey test: %v", err)
 		}
 
-		// Update the API key with a unique value
 		apiKey := fmt.Sprintf("test-api-key-%d", time.Now().UnixNano())
 		err = repo.UpdateAPIKey(context.Background(), createdCompany.ID, apiKey)
 		if err != nil {
 			t.Fatalf("failed to update API key: %v", err)
 		}
 
-		// Retrieve the company to verify the API key was updated
 		updatedCompany, err := repo.GetByID(context.Background(), createdCompany.ID)
 		if err != nil {
 			t.Fatalf("failed to get company after updating API key: %v", err)
 		}
 
-		// Verify the API key was updated
 		if updatedCompany.APIKey == nil {
 			t.Fatal("expected APIKey to be set, got nil")
 		}
@@ -249,12 +243,10 @@ func TestCompanyRepository(t *testing.T) {
 			t.Errorf("expected APIKey %q, got %q", apiKey, *updatedCompany.APIKey)
 		}
 
-		// Verify updated_at was updated
 		if !updatedCompany.UpdatedAt.After(createdCompany.UpdatedAt) {
 			t.Error("expected UpdatedAt to be updated, but it wasn't")
 		}
 
-		// Test updating a non-existent company
 		err = repo.UpdateAPIKey(context.Background(), -1, apiKey)
 		if err == nil {
 			t.Error("expected error when updating API key for non-existent company, got nil")
@@ -295,7 +287,6 @@ func TestCompanyRepository(t *testing.T) {
 			t.Error("expected UpdatedAt to be updated, but it wasn't")
 		}
 
-		// Test updating a non-existent company
 		err = repo.UpdateClientID(context.Background(), -1, clientID)
 		if err == nil {
 			t.Error("expected error when updating client ID for non-existent company, got nil")
@@ -320,7 +311,6 @@ func TestCompanyRepository(t *testing.T) {
 			t.Fatalf("failed to update API key: %v", err)
 		}
 
-		// Retrieve the company by API key
 		retrievedCompany, err := repo.GetCompanyByAPIKey(context.Background(), apiKey)
 		if err != nil {
 			t.Fatalf("failed to get company by API key: %v", err)
@@ -343,7 +333,6 @@ func TestCompanyRepository(t *testing.T) {
 			t.Errorf("expected APIKey %q, got %q", apiKey, *retrievedCompany.APIKey)
 		}
 
-		// Test getting a company with a non-existent API key
 		_, err = repo.GetCompanyByAPIKey(context.Background(), "non-existent-api-key")
 		if err == nil {
 			t.Error("expected error when getting company with non-existent API key, got nil")
