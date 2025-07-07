@@ -18,23 +18,19 @@ func NewRouter(
 ) *gin.Engine {
 	r := gin.Default()
 
-	// Health probe
 	r.GET("/health", handler.MakeHealthHandler(db))
 
-	// API v1
 	v1 := r.Group("/api/v1")
 	{
 		v1.POST("/execute", handler.MakeExecuteHandler(execSvc))
 		v1.GET("/problems", handler.MakeListProblemsHandler(problemService))
 		v1.GET("/problems/:id", handler.MakeGetProblemHandler(problemService))
 
-		// Company endpoints
 		companies := v1.Group("/companies")
 		{
 			companies.POST("/register", companyHandler.Register)
 			companies.POST("/login", companyHandler.Login)
 
-			// Protected routes
 			auth := companies.Group("")
 			auth.Use(middleware.JWTAuth())
 			{
@@ -50,7 +46,6 @@ func NewRouter(
 			}
 		}
 
-		// Coding test end points.
 		codingTests := v1.Group("/tests")
 		{
 			codingTests.GET("/:test_id/verify", codingTestHandler.VerifyTest)

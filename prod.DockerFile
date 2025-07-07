@@ -12,7 +12,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-# Optional: embed version/commit/date into the binary
 ARG BUILD_VERSION=dev
 ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
@@ -28,12 +27,10 @@ RUN go build \
 ###########################
 FROM alpine:3.20
 
-# Create non-root user
 RUN adduser -D -g '' app
 USER app
 WORKDIR /app
 
-# Copy artefacts
 COPY --from=builder /out/server           ./server
 COPY --from=builder /src/internal/config  ./internal/config
 COPY --from=builder /src/db/migrations    ./db/migrations

@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// Mock coding test repository
 type mockCodingTestRepository struct {
 	tests map[string]*models.CodingTest
 }
@@ -70,7 +69,6 @@ func (m *mockCodingTestRepository) GetByCompanyID(ctx context.Context, companyID
 	return result, nil
 }
 
-// Mock problem repository
 type mockProblemRepository struct {
 	problems map[int]*models.Problem
 }
@@ -115,10 +113,9 @@ func (m *mockProblemRepository) ListProblems(ctx context.Context) ([]*models.Pro
 	return problems, nil
 }
 
-// Mock company repository
 type mockCompanyRepository struct {
 	companies map[int]*models.Company
-	apiKeys   map[string]int // Map API keys to company IDs
+	apiKeys   map[string]int
 }
 
 func newMockCompanyRepository() *mockCompanyRepository {
@@ -159,7 +156,6 @@ func (m *mockCompanyRepository) GetCompanyByAPIKey(ctx context.Context, apiKey s
 	return m.GetByID(ctx, companyID)
 }
 
-// Implement only the methods needed for the tests
 func (m *mockCompanyRepository) Create(ctx context.Context, c *models.Company) (*models.Company, error) {
 	return nil, nil
 }
@@ -176,7 +172,6 @@ func (m *mockCompanyRepository) UpdateClientID(ctx context.Context, id int, clie
 	return nil
 }
 
-// Tests
 func TestGenerateTest(t *testing.T) {
 	codingTestRepo := newMockCodingTestRepository()
 	problemRepo := newMockProblemRepository()
@@ -214,7 +209,7 @@ func TestGenerateTest(t *testing.T) {
 
 	t.Run("ProblemNotFound", func(t *testing.T) {
 		companyID := 1
-		problemID := 999 // Non-existent problem
+		problemID := 999
 		expiresInHours := 24
 
 		_, _, err := service.GenerateTest(context.Background(), companyID, problemID, expiresInHours)
@@ -224,7 +219,7 @@ func TestGenerateTest(t *testing.T) {
 	})
 
 	t.Run("CompanyNotFound", func(t *testing.T) {
-		companyID := 999 // Non-existent company
+		companyID := 999
 		problemID := 1
 		expiresInHours := 24
 
@@ -243,7 +238,6 @@ func TestVerifyTest(t *testing.T) {
 
 	service := svc.New(codingTestRepo, problemRepo, companyRepo, baseURL)
 
-	// Create a test for verification
 	testID := "test-verify"
 	test := &models.CodingTest{
 		ID:                 testID,
@@ -288,7 +282,7 @@ func TestVerifyTest(t *testing.T) {
 			CompanyID:          1,
 			ProblemID:          1,
 			Status:             models.TestStatusPending,
-			ExpiresAt:          time.Now().Add(-24 * time.Hour), // Expired
+			ExpiresAt:          time.Now().Add(-24 * time.Hour),
 			TestDurationMinutes: 60,
 			CreatedAt:          time.Now(),
 			UpdatedAt:          time.Now(),
@@ -313,7 +307,6 @@ func TestStartTest(t *testing.T) {
 
 	service := svc.New(codingTestRepo, problemRepo, companyRepo, baseURL)
 
-	// Create a test for starting
 	testID := "test-start"
 	test := &models.CodingTest{
 		ID:                 testID,
@@ -339,7 +332,6 @@ func TestStartTest(t *testing.T) {
 			t.Fatalf("failed to start test: %v", err)
 		}
 
-		// Verify the test was updated
 		startedTest, err := codingTestRepo.GetTestByID(context.Background(), testID)
 		if err != nil {
 			t.Fatalf("failed to get started test: %v", err)
@@ -360,7 +352,6 @@ func TestStartTest(t *testing.T) {
 	})
 
 	t.Run("AlreadyStarted", func(t *testing.T) {
-		// Create a test that's already started
 		startedTestID := "test-already-started"
 		now := time.Now()
 		candidateName := "Already Started"
@@ -398,7 +389,6 @@ func TestSubmitTest(t *testing.T) {
 
 	service := svc.New(codingTestRepo, problemRepo, companyRepo, baseURL)
 
-	// Create a started test for submission
 	testID := "test-submit"
 	now := time.Now()
 	candidateName := "Submit Candidate"
@@ -430,7 +420,6 @@ func TestSubmitTest(t *testing.T) {
 			t.Fatalf("failed to submit test: %v", err)
 		}
 
-		// Verify the test was updated
 		submittedTest, err := codingTestRepo.GetTestByID(context.Background(), testID)
 		if err != nil {
 			t.Fatalf("failed to get submitted test: %v", err)
@@ -451,7 +440,6 @@ func TestSubmitTest(t *testing.T) {
 	})
 
 	t.Run("TestNotInProgress", func(t *testing.T) {
-		// Create a test that's not in progress
 		pendingTestID := "test-not-in-progress"
 		pendingTest := &models.CodingTest{
 			ID:                 pendingTestID,
@@ -477,7 +465,7 @@ func TestSubmitTest(t *testing.T) {
 	t.Run("TestExpired", func(t *testing.T) {
 		// Create a test that's expired
 		expiredTestID := "test-expired-submit"
-		startedTime := time.Now().Add(-2 * time.Hour) // Started 2 hours ago
+		startedTime := time.Now().Add(-2 * time.Hour)
 		candidateName := "Expired Candidate"
 		candidateEmail := "expired@example.com"
 		expiredTest := &models.CodingTest{
@@ -489,7 +477,7 @@ func TestSubmitTest(t *testing.T) {
 			CandidateName:      &candidateName,
 			CandidateEmail:     &candidateEmail,
 			ExpiresAt:          time.Now().Add(24 * time.Hour),
-			TestDurationMinutes: 60, // 1 hour duration, so it's expired
+			TestDurationMinutes: 60,
 			CreatedAt:          time.Now(),
 			UpdatedAt:          time.Now(),
 		}
@@ -513,7 +501,6 @@ func TestGetCompanyTests(t *testing.T) {
 
 	service := svc.New(codingTestRepo, problemRepo, companyRepo, baseURL)
 
-	// Create tests for a company
 	companyID := 1
 	for i := 0; i < 3; i++ {
 		testID := "test-company-" + string(rune('a'+i))
@@ -543,7 +530,6 @@ func TestGetCompanyTests(t *testing.T) {
 			t.Errorf("expected 3 tests, got %d", len(tests))
 		}
 
-		// Verify all tests belong to the company
 		for _, test := range tests {
 			if test.CompanyID != companyID {
 				t.Errorf("expected CompanyID %d, got %d", companyID, test.CompanyID)

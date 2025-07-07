@@ -24,7 +24,7 @@ func (h *CodingTestHandler) GenerateTest(c *gin.Context) {
 
 	var req struct {
 		ProblemID       int `json:"problem_id" binding:"required"`
-		ExpiresInHours  int `json:"expires_in_hours" binding:"required,min=1,max=168"` // max 7 days
+		ExpiresInHours  int `json:"expires_in_hours" binding:"required,min=1,max=168"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {

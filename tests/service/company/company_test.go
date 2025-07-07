@@ -9,10 +9,9 @@ import (
 	"time"
 )
 
-// mockRepository is a mock implementation of the company.Repository interface
 type mockRepository struct {
 	companies map[int]*models.Company
-	emails    map[string]int // email -> company ID mapping
+	emails    map[string]int
 	nextID    int
 }
 
@@ -25,12 +24,10 @@ func newMockRepository() *mockRepository {
 }
 
 func (m *mockRepository) Create(ctx context.Context, c *models.Company) (*models.Company, error) {
-	// Check if email already exists
 	if _, exists := m.emails[c.Email]; exists {
 		return nil, errors.New("email already exists")
 	}
 
-	// Set ID and timestamps
 	c.ID = m.nextID
 	c.CreatedAt = time.Now()
 	c.UpdatedAt = time.Now()
@@ -80,7 +77,6 @@ func (m *mockRepository) UpdateClientID(ctx context.Context, id int, clientID st
 }
 
 func (m *mockRepository) GetCompanyByAPIKey(ctx context.Context, apiKey string) (*models.Company, error) {
-	// Iterate through companies to find one with matching API key
 	for _, company := range m.companies {
 		if company.APIKey != nil && *company.APIKey == apiKey {
 			return company, nil
@@ -119,7 +115,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("DuplicateEmail", func(t *testing.T) {
 		name := "Another Company"
-		email := "test@example.com" // Same email as previous test
+		email := "test@example.com"
 		password := "password456"
 
 		_, err := service.Register(context.Background(), name, email, password)
@@ -133,7 +129,6 @@ func TestLogin(t *testing.T) {
 	repo := newMockRepository()
 	service := svc.New(repo)
 
-	// Register a company for login tests
 	name := "Login Test Company"
 	email := "login@example.com"
 	password := "loginpassword"
@@ -179,7 +174,6 @@ func TestGenerateAPIKey(t *testing.T) {
 	repo := newMockRepository()
 	service := svc.New(repo)
 
-	// Register a company for API key tests
 	name := "API Key Test Company"
 	email := "apikey@example.com"
 	password := "password"
@@ -199,7 +193,6 @@ func TestGenerateAPIKey(t *testing.T) {
 			t.Error("expected API key to be returned, got empty string")
 		}
 
-		// Verify the API key was stored in the repository
 		updatedCompany, err := repo.GetByID(context.Background(), company.ID)
 		if err != nil {
 			t.Fatalf("failed to get company after API key generation: %v", err)
@@ -225,7 +218,6 @@ func TestGenerateClientID(t *testing.T) {
 	repo := newMockRepository()
 	service := svc.New(repo)
 
-	// Register a company for client ID tests
 	name := "Client ID Test Company"
 	email := "clientid@example.com"
 	password := "password"
@@ -245,7 +237,6 @@ func TestGenerateClientID(t *testing.T) {
 			t.Error("expected client ID to be returned, got empty string")
 		}
 
-		// Verify the client ID was stored in the repository
 		updatedCompany, err := repo.GetByID(context.Background(), company.ID)
 		if err != nil {
 			t.Fatalf("failed to get company after client ID generation: %v", err)

@@ -48,7 +48,6 @@ func (h *CompanyHandler) Login(c *gin.Context) {
 }
 
 func (h *CompanyHandler) GenerateAPIKey(c *gin.Context) {
-	// Get company ID from JWT token
 	companyID, exists := c.Get("company_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "unauthorized"})
@@ -64,7 +63,6 @@ func (h *CompanyHandler) GenerateAPIKey(c *gin.Context) {
 }
 
 func (h *CompanyHandler) GenerateClientID(c *gin.Context) {
-	// Get company ID from JWT token
 	companyID, exists := c.Get("company_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "unauthorized"})
