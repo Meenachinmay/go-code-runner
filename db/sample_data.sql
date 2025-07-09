@@ -1,3 +1,7 @@
+-- Insert a sample company
+INSERT INTO companies (id, name, email, password_hash, api_key, client_id)
+VALUES (1, 'Test Company', 'test@example.com', 'password_hash', 'api_key', 'client_id');
+
 -- Insert a sample problem
 INSERT INTO problems (title, description, difficulty)
 VALUES ('Two Sum', 'Given two numbers, return their sum.', 'Easy');
