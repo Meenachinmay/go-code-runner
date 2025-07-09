@@ -78,6 +78,7 @@ jobs:
         run: |
           docker build \
             --platform linux/amd64 \
-            --tag auth-service:${{ github.sha }} \
-            --tag auth-service:latest \
+            --tag code-runner:${{ github.sha }} \
+            --tag code-runner:latest \
+            -f prod.DockerFile \
             .
