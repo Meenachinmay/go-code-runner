@@ -46,6 +46,8 @@ func NewTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
+	// Sample data loading removed to avoid duplicate key errors
+
 	cleanup := func() {
 		pool.Close()
 	}
@@ -61,16 +63,7 @@ func getenvDefault(key, def string) string {
 	return v
 }
 
-func isDuplicateDatabase(err error) bool {
-	const pgDuplicateDatabaseCode = "42P04"
-	type pgErr interface {
-		Code() string
-	}
-	if e, ok := err.(pgErr); ok {
-		return e.Code() == pgDuplicateDatabaseCode
-	}
-	return false
-}
+// isDuplicateKey function removed as it's no longer needed
 
 func loadTestDotEnv() error {
 	const file = ".env.test"
@@ -117,3 +110,5 @@ func findMigrationsDir() (string, error) {
 
 	return "", errors.New("migrations directory not found in working directory or any parent directory")
 }
+
+// findSampleDataFile function removed as it's no longer needed
