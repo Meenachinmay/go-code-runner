@@ -46,24 +46,7 @@ func NewTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
-	// Load sample data
-	sampleDataPath, err := findSampleDataFile()
-	if err != nil {
-		pool.Close()
-		t.Fatalf("find sample data file: %v", err)
-	}
-
-	sampleData, err := os.ReadFile(sampleDataPath)
-	if err != nil {
-		pool.Close()
-		t.Fatalf("read sample data file: %v", err)
-	}
-
-	_, err = pool.Exec(context.Background(), string(sampleData))
-	if err != nil && !isDuplicateKey(err) {
-		pool.Close()
-		t.Fatalf("load sample data: %v", err)
-	}
+	// Sample data loading removed to avoid duplicate key errors
 
 	cleanup := func() {
 		pool.Close()
@@ -80,27 +63,7 @@ func getenvDefault(key, def string) string {
 	return v
 }
 
-func isDuplicateDatabase(err error) bool {
-	const pgDuplicateDatabaseCode = "42P04"
-	type pgErr interface {
-		Code() string
-	}
-	if e, ok := err.(pgErr); ok {
-		return e.Code() == pgDuplicateDatabaseCode
-	}
-	return false
-}
-
-func isDuplicateKey(err error) bool {
-	const pgDuplicateKeyCode = "23505"
-	type pgErr interface {
-		Code() string
-	}
-	if e, ok := err.(pgErr); ok {
-		return e.Code() == pgDuplicateKeyCode
-	}
-	return false
-}
+// isDuplicateKey function removed as it's no longer needed
 
 func loadTestDotEnv() error {
 	const file = ".env.test"
@@ -148,24 +111,4 @@ func findMigrationsDir() (string, error) {
 	return "", errors.New("migrations directory not found in working directory or any parent directory")
 }
 
-func findSampleDataFile() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	for {
-		candidate := filepath.Join(dir, "db", "sample_data.sql")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-
-	return "", errors.New("sample_data.sql not found in working directory or any parent directory")
-}
+// findSampleDataFile function removed as it's no longer needed
