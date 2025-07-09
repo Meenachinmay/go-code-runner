@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"go-code-runner/internal/models"
 	"go-code-runner/internal/repository/coding_test"
 	"go-code-runner/internal/repository/company"
@@ -16,9 +17,11 @@ func TestCodingTestRepository(t *testing.T) {
 
 	// Create a company first to satisfy the foreign key constraint
 	companyRepo := company.New(db)
+	// Use a unique email to avoid conflicts
+	uniqueEmail := fmt.Sprintf("test-%d@example.com", time.Now().UnixNano())
 	testCompany := &models.Company{
 		Name:         "Test Company",
-		Email:        "test@example.com",
+		Email:        uniqueEmail,
 		PasswordHash: "password_hash",
 	}
 	createdCompany, err := companyRepo.Create(context.Background(), testCompany)
