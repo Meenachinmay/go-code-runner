@@ -60,7 +60,7 @@ func NewTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 
 	_, err = pool.Exec(context.Background(), string(sampleData))
-	if err != nil {
+	if err != nil && !isDuplicateKey(err) {
 		pool.Close()
 		t.Fatalf("load sample data: %v", err)
 	}
@@ -87,6 +87,17 @@ func isDuplicateDatabase(err error) bool {
 	}
 	if e, ok := err.(pgErr); ok {
 		return e.Code() == pgDuplicateDatabaseCode
+	}
+	return false
+}
+
+func isDuplicateKey(err error) bool {
+	const pgDuplicateKeyCode = "23505"
+	type pgErr interface {
+		Code() string
+	}
+	if e, ok := err.(pgErr); ok {
+		return e.Code() == pgDuplicateKeyCode
 	}
 	return false
 }
