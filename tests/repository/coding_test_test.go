@@ -6,6 +6,7 @@ import (
 	"go-code-runner/internal/models"
 	"go-code-runner/internal/repository/coding_test"
 	"go-code-runner/internal/repository/company"
+	"go-code-runner/internal/repository/problems"
 	"go-code-runner/tests/helpers"
 	"testing"
 	"time"
@@ -29,14 +30,31 @@ func TestCodingTestRepository(t *testing.T) {
 		t.Fatalf("failed to create test company: %v", err)
 	}
 
-	// Set API key and client ID
-	err = companyRepo.UpdateAPIKey(context.Background(), createdCompany.ID, "api_key")
+	// Set API key and client ID with unique values
+	uniqueAPIKey := fmt.Sprintf("api-key-%d", time.Now().UnixNano())
+	err = companyRepo.UpdateAPIKey(context.Background(), createdCompany.ID, uniqueAPIKey)
 	if err != nil {
 		t.Fatalf("failed to update API key: %v", err)
 	}
-	err = companyRepo.UpdateClientID(context.Background(), createdCompany.ID, "client_id")
+	uniqueClientID := fmt.Sprintf("client-id-%d", time.Now().UnixNano())
+	err = companyRepo.UpdateClientID(context.Background(), createdCompany.ID, uniqueClientID)
 	if err != nil {
 		t.Fatalf("failed to update client ID: %v", err)
+	}
+
+	// Create a problem first to satisfy the foreign key constraint
+	problemRepo := problems.NewProblemRepository(db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	testProblem := models.Problem{
+		Title:       "Test Problem",
+		Description: "This is a test problem",
+		Difficulty:  "Easy",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	problemID, err := problemRepo.CreateProblem(context.Background(), testProblem)
+	if err != nil {
+		t.Fatalf("failed to create test problem: %v", err)
 	}
 
 	repo := coding_test.New(db)
@@ -46,7 +64,7 @@ func TestCodingTestRepository(t *testing.T) {
 		test := &models.CodingTest{
 			ID:                 testID,
 			CompanyID:          createdCompany.ID,
-			ProblemID:          1,
+			ProblemID:          problemID,
 			Status:             models.TestStatusPending,
 			ExpiresAt:          time.Now().Add(24 * time.Hour),
 			TestDurationMinutes: 60,
@@ -67,7 +85,7 @@ func TestCodingTestRepository(t *testing.T) {
 		test := &models.CodingTest{
 			ID:                 testID,
 			CompanyID:          createdCompany.ID,
-			ProblemID:          1,
+			ProblemID:          problemID,
 			Status:             models.TestStatusPending,
 			ExpiresAt:          time.Now().Add(24 * time.Hour),
 			TestDurationMinutes: 60,
@@ -91,8 +109,8 @@ func TestCodingTestRepository(t *testing.T) {
 		if retrievedTest.CompanyID != createdCompany.ID {
 			t.Errorf("expected CompanyID %d, got %d", createdCompany.ID, retrievedTest.CompanyID)
 		}
-		if retrievedTest.ProblemID != 1 {
-			t.Errorf("expected ProblemID 1, got %d", retrievedTest.ProblemID)
+		if retrievedTest.ProblemID != problemID {
+			t.Errorf("expected ProblemID %d, got %d", problemID, retrievedTest.ProblemID)
 		}
 		if retrievedTest.Status != models.TestStatusPending {
 			t.Errorf("expected Status %s, got %s", models.TestStatusPending, retrievedTest.Status)
@@ -171,7 +189,7 @@ func TestCodingTestRepository(t *testing.T) {
 		test := &models.CodingTest{
 			ID:                 testID,
 			CompanyID:          createdCompany.ID,
-			ProblemID:          1,
+			ProblemID:          problemID,
 			Status:             models.TestStatusStarted,
 			StartedAt:          &startedTime,
 			ExpiresAt:          time.Now().Add(24 * time.Hour),
@@ -208,7 +226,7 @@ func TestCodingTestRepository(t *testing.T) {
 			test := &models.CodingTest{
 				ID:                 testID,
 				CompanyID:          companyID,
-				ProblemID:          1,
+				ProblemID:          problemID,
 				Status:             models.TestStatusPending,
 				ExpiresAt:          time.Now().Add(24 * time.Hour),
 				TestDurationMinutes: 60,
