@@ -5,7 +5,6 @@ import (
 	"go-code-runner/internal/models"
 )
 
-// GetTestCasesByProblemID retrieves all test cases for a specific problem
 func (r *testCaseRepository) GetTestCasesByProblemID(ctx context.Context, problemID int) ([]*models.TestCase, error) {
 	query := `
 		SELECT id, problem_id, input, expected_output, is_hidden, created_at, updated_at
@@ -45,7 +44,6 @@ func (r *testCaseRepository) GetTestCasesByProblemID(ctx context.Context, proble
 	return testCases, nil
 }
 
-// CreateTestCase creates a new test case
 func (r *testCaseRepository) CreateTestCase(ctx context.Context, tc models.TestCase) (int, error) {
 	q := `
 		INSERT INTO test_cases
