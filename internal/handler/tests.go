@@ -14,7 +14,6 @@ func NewCodingTestHandler(service coding_test.Service) *CodingTestHandler {
 	return &CodingTestHandler{service: service}
 }
 
-// GenerateTest handles POST /api/v1/companies/tests/generate
 func (h *CodingTestHandler) GenerateTest(c *gin.Context) {
 	companyID, exists := c.Get("company_id")
 	if !exists {
@@ -23,8 +22,8 @@ func (h *CodingTestHandler) GenerateTest(c *gin.Context) {
 	}
 
 	var req struct {
-		ProblemID       int `json:"problem_id" binding:"required"`
-		ExpiresInHours  int `json:"expires_in_hours" binding:"required,min=1,max=168"`
+		ProblemID      int `json:"problem_id" binding:"required"`
+		ExpiresInHours int `json:"expires_in_hours" binding:"required,min=1,max=168"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -44,7 +43,6 @@ func (h *CodingTestHandler) GenerateTest(c *gin.Context) {
 	})
 }
 
-// VerifyTest handles GET /api/v1/tests/:test_id/verify
 func (h *CodingTestHandler) VerifyTest(c *gin.Context) {
 	testID := c.Param("test_id")
 
@@ -55,14 +53,13 @@ func (h *CodingTestHandler) VerifyTest(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"test_id": test.ID,
-		"problem_id": test.ProblemID,
-		"status": test.Status,
+		"test_id":               test.ID,
+		"problem_id":            test.ProblemID,
+		"status":                test.Status,
 		"test_duration_minutes": test.TestDurationMinutes,
 	})
 }
 
-// StartTest handles POST /api/v1/tests/:test_id/start
 func (h *CodingTestHandler) StartTest(c *gin.Context) {
 	testID := c.Param("test_id")
 
@@ -84,7 +81,6 @@ func (h *CodingTestHandler) StartTest(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "test started successfully"})
 }
 
-// SubmitTest handles POST /api/v1/tests/:test_id/submit
 func (h *CodingTestHandler) SubmitTest(c *gin.Context) {
 	testID := c.Param("test_id")
 
@@ -106,7 +102,6 @@ func (h *CodingTestHandler) SubmitTest(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "test submitted successfully"})
 }
 
-// GetCompanyTests handles GET /api/v1/companies/tests
 func (h *CodingTestHandler) GetCompanyTests(c *gin.Context) {
 	companyID, _ := c.Get("company_id")
 

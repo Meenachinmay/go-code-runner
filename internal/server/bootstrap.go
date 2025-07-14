@@ -19,23 +19,15 @@ import (
 )
 
 func Run() {
-	// -----------------------------------------------------------------
-	// 0. logger + env
-	// -----------------------------------------------------------------
-	logger := log.New(os.Stdout, "CODE-RUNNER: ", log.LstdFlags|log.Lmicroseconds)
-	_ = godotenv.Load() // .env is optional
 
-	// -----------------------------------------------------------------
-	// 1. configuration
-	// -----------------------------------------------------------------
+	logger := log.New(os.Stdout, "CODE-RUNNER: ", log.LstdFlags|log.Lmicroseconds)
+	_ = godotenv.Load()
+
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Fatalf("failed to load configuration: %v", err)
 	}
 
-	// -----------------------------------------------------------------
-	// 2. Postgres connection & migrations
-	// -----------------------------------------------------------------
 	ctx := context.Background()
 	dbpool, err := database.New(ctx, cfg.DBConnStr)
 	if err != nil {
@@ -50,7 +42,6 @@ func Run() {
 	}
 	logger.Println("database is up-to-date")
 
-	//------Redis-------
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
@@ -59,19 +50,14 @@ func Run() {
 		MinIdleConns: 10,
 	})
 
-	// Test redis connection
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		logger.Fatalf("failed to connect to redis: %v", err)
 	}
 	defer redisClient.Close()
 	logger.Println("redis connection established")
 
-	// -----------------------------------------------------------------
-	// 3. domain services & repositories
-	// -----------------------------------------------------------------
 	repo := repository.New(dbpool)
 
-	//---- Configure code executor with scalability settings
 	executorConfig := code_executor.Config{
 		WorkerCount:      cfg.ExecutorWorkerCount,
 		MaxQueueSize:     cfg.ExecutorMaxQueueSize,
@@ -79,23 +65,16 @@ func Run() {
 		ResultTTL:        cfg.ExecutorResultTTL,
 	}
 
-	// executor service with redis
 	executorService := code_executor.NewService(executorConfig, logger, repo, redisClient)
 
 	companyService := company.New(repo)
 	companyHandler := handler.NewCompanyHandler(companyService)
 	problemService := problems.New(repo)
-	codingTestService := coding_test.New(repo, repo, repo, "http://localhost:5173")
+	codingTestService := coding_test.New(repo, repo, repo, "http://localhost:8080")
 	codingTestHandler := handler.NewCodingTestHandler(codingTestService)
 
-	// -----------------------------------------------------------------
-	// 4. Initialize middleware
-	// -----------------------------------------------------------------
 	middleware.InitAPIKeyAuth(dbpool)
 
-	// -----------------------------------------------------------------
-	// 5. HTTP router + handlers
-	// -----------------------------------------------------------------
 	r := NewRouter(dbpool, problemService, executorService, companyHandler, codingTestHandler)
 
 	addr := ":" + cfg.ServerPort

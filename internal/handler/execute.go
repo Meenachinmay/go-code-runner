@@ -49,7 +49,6 @@ func MakeExecuteHandler(executorService code_executor.Service) gin.HandlerFunc {
 			return
 		}
 
-		// All executions are now async by default
 		var job *code_executor.ExecutionJob
 		var jobID string
 		var err error
@@ -86,7 +85,6 @@ func MakeExecuteHandler(executorService code_executor.Service) gin.HandlerFunc {
 	}
 }
 
-// Job status handler - NEW
 func MakeJobStatusHandler(executorService code_executor.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		jobID := c.Param("job_id")
@@ -106,7 +104,6 @@ func MakeJobStatusHandler(executorService code_executor.Service) gin.HandlerFunc
 			"status":  string(result.Status),
 		}
 
-		// Include results if job is completed
 		if result.Status == code_executor.JobStatusCompleted {
 			if result.ExecutionResult != nil {
 				response["output"] = result.ExecutionResult.Output

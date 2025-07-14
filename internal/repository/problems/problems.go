@@ -5,7 +5,6 @@ import (
 	"go-code-runner/internal/models"
 )
 
-// GetProblemByID retrieves a problem by its ID
 func (r *problemRepository) GetProblemByID(ctx context.Context, id int) (*models.Problem, error) {
 	query := `
 		SELECT id, title, description, difficulty, created_at, updated_at
@@ -30,7 +29,6 @@ func (r *problemRepository) GetProblemByID(ctx context.Context, id int) (*models
 	return &problem, nil
 }
 
-// ListProblems retrieves all problems
 func (r *problemRepository) ListProblems(ctx context.Context) ([]*models.Problem, error) {
 	query := `
 		SELECT id, title, description, difficulty, created_at, updated_at
@@ -68,7 +66,6 @@ func (r *problemRepository) ListProblems(ctx context.Context) ([]*models.Problem
 	return problems, nil
 }
 
-// CreateProblem creates a new problem
 func (r *problemRepository) CreateProblem(ctx context.Context, p models.Problem) (int, error) {
 	q := `
 		INSERT INTO problems

@@ -20,7 +20,6 @@ import (
 	testcaserepo "go-code-runner/internal/repository/test_cases"
 )
 
-// Configuration for the executor service
 type Config struct {
 	WorkerCount      int
 	MaxQueueSize     int
@@ -28,7 +27,6 @@ type Config struct {
 	ResultTTL        time.Duration
 }
 
-// Execution result types
 type ExecutionResult struct {
 	Output string
 	Error  string
@@ -61,7 +59,6 @@ type JobResult struct {
 	CompletedAt      time.Time
 }
 
-// Service implementation
 type service struct {
 	config      Config
 	logger      *log.Logger
@@ -73,17 +70,15 @@ type service struct {
 	modCacheDir   string
 	hostTempDir   string
 
-	// Worker pool management
 	jobQueue   chan *ExecutionJob
 	workerWg   sync.WaitGroup
 	shutdownCh chan struct{}
 
-	// Metrics
 	activeExecutions int64
 }
 
 func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseRepository, redisClient *redis.Client) Service {
-	logger.Printf("Initializing code executor service with config: WorkerCount=%d, MaxQueueSize=%d, ExecutionTimeout=%v, ResultTTL=%v", 
+	logger.Printf("Initializing code executor service with config: WorkerCount=%d, MaxQueueSize=%d, ExecutionTimeout=%v, ResultTTL=%v",
 		cfg.WorkerCount, cfg.MaxQueueSize, cfg.ExecutionTimeout, cfg.ResultTTL)
 
 	buildCacheDir := "/tmp/runbox/go-build-cache"
@@ -115,18 +110,14 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 
 	logger.Printf("Redis connection established successfully")
 
-	// Pre-pull Docker image
 	s.ensureDockerImageAvailable("golang:1.22-alpine")
 
-	// Start workers
 	logger.Printf("Starting %d worker goroutines", cfg.WorkerCount)
 	s.startWorkers()
 
-	// Start Redis queue processor
 	logger.Printf("Starting Redis queue processor goroutine")
 	go s.processRedisQueue()
 
-	// Start metrics reporter
 	logger.Printf("Starting metrics reporter goroutine")
 	go s.reportMetrics()
 
@@ -134,7 +125,6 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 	return s
 }
 
-// Ensure Docker image is available (YOUR ORIGINAL METHOD)
 func (s *service) ensureDockerImageAvailable(imageName string) {
 	if _, exists := s.imageCache[imageName]; exists {
 		return
@@ -160,9 +150,8 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 	s.imageCache[imageName] = true
 }
 
-// Core execution method (YOUR ORIGINAL METHOD - UNCHANGED)
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
-	// Track active executions for metrics
+
 	atomic.AddInt64(&s.activeExecutions, 1)
 	defer atomic.AddInt64(&s.activeExecutions, -1)
 
@@ -271,7 +260,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	return result, nil
 }
 
-// Internal method for executing with test cases (extracted from your original ExecuteWithTestCases)
 func (s *service) executeWithTestCasesInternal(ctx context.Context, code string, language string, testCases []*models.TestCase) (*models.ExecutionResults, error) {
 	var testResults []models.TestResult
 	success := true
@@ -315,14 +303,11 @@ func (s *service) executeWithTestCasesInternal(ctx context.Context, code string,
 	}, nil
 }
 
-// ============= PUBLIC INTERFACE METHODS (YOUR ORIGINAL SIGNATURES) =============
-
 func (s *service) Execute(ctx context.Context, code string, language string) (*ExecutionResult, error) {
 	overallStart := time.Now()
 	s.logger.Printf("-------------------------------------------------")
 	s.logger.Println("Received new execution request.")
 
-	// Submit job to queue
 	job := &ExecutionJob{
 		Code:     code,
 		Language: language,
@@ -333,7 +318,6 @@ func (s *service) Execute(ctx context.Context, code string, language string) (*E
 		return nil, err
 	}
 
-	// Wait for result (synchronous for backward compatibility)
 	result, err := s.waitForJobResult(ctx, jobID)
 	if err != nil {
 		return nil, err
@@ -350,7 +334,6 @@ func (s *service) ExecuteWithTestCases(ctx context.Context, code string, languag
 	s.logger.Printf("-------------------------------------------------")
 	s.logger.Println("Received execution request with test cases.")
 
-	// Submit job to queue
 	job := &ExecutionJob{
 		Code:      code,
 		Language:  language,
@@ -362,7 +345,6 @@ func (s *service) ExecuteWithTestCases(ctx context.Context, code string, languag
 		return nil, err
 	}
 
-	// Wait for result
 	result, err := s.waitForJobResult(ctx, jobID)
 	if err != nil {
 		return nil, err
@@ -377,7 +359,6 @@ func (s *service) ExecuteWithTestCases(ctx context.Context, code string, languag
 func (s *service) ExecuteForProblem(ctx context.Context, code string, language string, problemID int) (*models.ExecutionResults, error) {
 	s.logger.Printf("Executing code for problem %d", problemID)
 
-	// Submit job to queue
 	job := &ExecutionJob{
 		Code:      code,
 		Language:  language,
@@ -389,7 +370,6 @@ func (s *service) ExecuteForProblem(ctx context.Context, code string, language s
 		return nil, err
 	}
 
-	// Wait for result
 	result, err := s.waitForJobResult(ctx, jobID)
 	if err != nil {
 		return nil, err
@@ -402,17 +382,14 @@ func (s *service) ExecuteForProblem(ctx context.Context, code string, language s
 	return result.ExecutionResults, nil
 }
 
-// ============= NEW ASYNC METHODS FOR SCALABILITY =============
-
 func (s *service) SubmitJob(ctx context.Context, job *ExecutionJob) (string, error) {
 	startTime := time.Now()
 	job.ID = uuid.New().String()
 	job.SubmitTime = startTime
 
-	s.logger.Printf("[JobID: %s] Submitting new job: Language=%s, ProblemID=%d, TestCases=%d", 
+	s.logger.Printf("[JobID: %s] Submitting new job: Language=%s, ProblemID=%d, TestCases=%d",
 		job.ID, job.Language, job.ProblemID, len(job.TestCases))
 
-	// Serialize job
 	jobData, err := json.Marshal(job)
 	if err != nil {
 		s.logger.Printf("[JobID: %s] ERROR: Failed to marshal job: %v", job.ID, err)
@@ -420,7 +397,6 @@ func (s *service) SubmitJob(ctx context.Context, job *ExecutionJob) (string, err
 	}
 	s.logger.Printf("[JobID: %s] Job serialized successfully, size=%d bytes", job.ID, len(jobData))
 
-	// Push to Redis queue
 	s.logger.Printf("[JobID: %s] Pushing job to Redis execution_queue", job.ID)
 	if err := s.redisClient.RPush(ctx, "execution_queue", jobData).Err(); err != nil {
 		s.logger.Printf("[JobID: %s] ERROR: Failed to push job to Redis queue: %v", job.ID, err)
@@ -428,7 +404,6 @@ func (s *service) SubmitJob(ctx context.Context, job *ExecutionJob) (string, err
 	}
 	s.logger.Printf("[JobID: %s] Job pushed to Redis queue successfully", job.ID)
 
-	// Set initial status
 	s.logger.Printf("[JobID: %s] Setting initial job status to %s", job.ID, JobStatusPending)
 	s.updateJobStatus(ctx, job.ID, JobStatusPending)
 
@@ -445,7 +420,7 @@ func (s *service) GetJobResult(ctx context.Context, jobID string) (*JobResult, e
 	data, err := s.redisClient.Get(ctx, resultKey).Result()
 
 	if err == redis.Nil {
-		// Check if job is still pending or running
+
 		statusKey := fmt.Sprintf("job_status:%s", jobID)
 		s.logger.Printf("[JobID: %s] Job result not found, checking status key: %s", jobID, statusKey)
 		status, statusErr := s.redisClient.Get(ctx, statusKey).Result()
@@ -477,12 +452,10 @@ func (s *service) GetJobResult(ctx context.Context, jobID string) (*JobResult, e
 		return nil, err
 	}
 
-	s.logger.Printf("[JobID: %s] Job result retrieved successfully with status=%s (took %v)", 
+	s.logger.Printf("[JobID: %s] Job result retrieved successfully with status=%s (took %v)",
 		jobID, result.Status, time.Since(startTime))
 	return &result, nil
 }
-
-// ============= WORKER POOL IMPLEMENTATION =============
 
 func (s *service) startWorkers() {
 	s.logger.Printf("Starting %d workers in the worker pool", s.config.WorkerCount)
@@ -511,11 +484,11 @@ func (s *service) worker(id int) {
 			s.logger.Printf("[Worker-%d] Received job %s (total jobs processed: %d)", id, job.ID, jobsProcessed)
 			jobStartTime := time.Now()
 			s.processJob(job)
-			s.logger.Printf("[Worker-%d] Completed job %s (took %v, total jobs processed: %d)", 
+			s.logger.Printf("[Worker-%d] Completed job %s (took %v, total jobs processed: %d)",
 				id, job.ID, time.Since(jobStartTime), jobsProcessed)
 
 		case <-s.shutdownCh:
-			s.logger.Printf("[Worker-%d] Shutting down after processing %d jobs (active for %v)", 
+			s.logger.Printf("[Worker-%d] Shutting down after processing %d jobs (active for %v)",
 				id, jobsProcessed, time.Since(startTime))
 			return
 		}
@@ -530,17 +503,14 @@ func (s *service) processJob(job *ExecutionJob) {
 	waitTime := startTime.Sub(job.SubmitTime)
 	s.logger.Printf("[JobID: %s] Job waited in queue for %v before processing", job.ID, waitTime)
 
-	// Update job status to running
 	s.logger.Printf("[JobID: %s] Updating job status to %s", job.ID, JobStatusRunning)
 	s.updateJobStatus(ctx, job.ID, JobStatusRunning)
 
 	var result *JobResult
 
-	// Route to appropriate execution method based on job type
 	if job.ProblemID > 0 {
 		s.logger.Printf("[JobID: %s] Processing job for problem ID %d", job.ID, job.ProblemID)
 
-		// Get test cases for problem
 		s.logger.Printf("[JobID: %s] Fetching test cases for problem ID %d", job.ID, job.ProblemID)
 		testCases, err := s.repository.GetTestCasesByProblemID(ctx, job.ProblemID)
 
@@ -575,7 +545,7 @@ func (s *service) processJob(job *ExecutionJob) {
 					CompletedAt:      completedAt,
 				}
 			} else {
-				s.logger.Printf("[JobID: %s] Code execution completed successfully with %d test results", 
+				s.logger.Printf("[JobID: %s] Code execution completed successfully with %d test results",
 					job.ID, len(execResults.TestResults))
 				result = &JobResult{
 					JobID:            job.ID,
@@ -586,7 +556,7 @@ func (s *service) processJob(job *ExecutionJob) {
 			}
 		}
 	} else if len(job.TestCases) > 0 {
-		// Execute with provided test cases
+
 		s.logger.Printf("[JobID: %s] Processing job with %d provided test cases", job.ID, len(job.TestCases))
 		execResults, err := s.executeWithTestCasesInternal(ctx, job.Code, job.Language, job.TestCases)
 
@@ -601,7 +571,7 @@ func (s *service) processJob(job *ExecutionJob) {
 				CompletedAt:      completedAt,
 			}
 		} else {
-			s.logger.Printf("[JobID: %s] Code execution with test cases completed successfully with %d test results", 
+			s.logger.Printf("[JobID: %s] Code execution with test cases completed successfully with %d test results",
 				job.ID, len(execResults.TestResults))
 			result = &JobResult{
 				JobID:            job.ID,
@@ -611,7 +581,7 @@ func (s *service) processJob(job *ExecutionJob) {
 			}
 		}
 	} else {
-		// Simple execution without test cases
+
 		s.logger.Printf("[JobID: %s] Processing simple execution job without test cases", job.ID)
 		execResult, err := s.executeCode(ctx, job.Code, job.Language, "")
 
@@ -636,17 +606,14 @@ func (s *service) processJob(job *ExecutionJob) {
 		}
 	}
 
-	// Store result in Redis
 	s.logger.Printf("[JobID: %s] Storing job result in Redis with status %s", job.ID, result.Status)
 	s.storeJobResult(ctx, result)
 
 	processingTime := time.Since(startTime)
 	totalTime := result.CompletedAt.Sub(job.SubmitTime)
-	s.logger.Printf("[JobID: %s] Job processing completed: status=%s, processing_time=%v, total_time=%v", 
+	s.logger.Printf("[JobID: %s] Job processing completed: status=%s, processing_time=%v, total_time=%v",
 		job.ID, result.Status, processingTime, totalTime)
 }
-
-// ============= REDIS QUEUE PROCESSING =============
 
 func (s *service) processRedisQueue() {
 	s.logger.Printf("Redis queue processor started, monitoring 'execution_queue'")
@@ -656,17 +623,17 @@ func (s *service) processRedisQueue() {
 	for {
 		select {
 		case <-s.shutdownCh:
-			s.logger.Printf("Redis queue processor shutting down after processing %d jobs (active for %v)", 
+			s.logger.Printf("Redis queue processor shutting down after processing %d jobs (active for %v)",
 				jobsProcessed, time.Since(startTime))
 			return
 		default:
-			// Pop job from Redis queue (blocking pop with 1 second timeout)
+
 			s.logger.Printf("Waiting for jobs in Redis 'execution_queue' (BLPOP with 1s timeout)")
 			result, err := s.redisClient.BLPop(context.Background(), time.Second, "execution_queue").Result()
 
 			if err == redis.Nil {
-				// This is normal for BLPOP timeout, don't log to avoid noise
-				continue // Timeout, try again
+
+				continue
 			} else if err != nil {
 				s.logger.Printf("ERROR: Failed to pop job from Redis queue: %v", err)
 				s.logger.Printf("Backing off for 1 second before retrying")
@@ -691,7 +658,6 @@ func (s *service) processRedisQueue() {
 
 			s.logger.Printf("[JobID: %s] Job unmarshaled successfully from Redis queue", job.ID)
 
-			// Send to worker pool
 			s.logger.Printf("[JobID: %s] Attempting to send job to internal worker pool queue", job.ID)
 			select {
 			case s.jobQueue <- &job:
@@ -707,16 +673,13 @@ func (s *service) processRedisQueue() {
 				time.Sleep(100 * time.Millisecond)
 			}
 
-			// Log queue stats periodically
 			if jobsProcessed%100 == 0 {
-				s.logger.Printf("Redis queue processor stats: processed %d jobs in %v", 
+				s.logger.Printf("Redis queue processor stats: processed %d jobs in %v",
 					jobsProcessed, time.Since(startTime))
 			}
 		}
 	}
 }
-
-// ============= HELPER METHODS =============
 
 func (s *service) waitForJobResult(ctx context.Context, jobID string) (*JobResult, error) {
 	startTime := time.Now()
@@ -736,7 +699,7 @@ func (s *service) waitForJobResult(ctx context.Context, jobID string) (*JobResul
 			return nil, ctx.Err()
 
 		case <-timeout:
-			s.logger.Printf("[JobID: %s] ERROR: Execution timed out after %v while waiting for job result", 
+			s.logger.Printf("[JobID: %s] ERROR: Execution timed out after %v while waiting for job result",
 				jobID, s.config.ExecutionTimeout+5*time.Second)
 			return nil, fmt.Errorf("execution timeout waiting for job %s", jobID)
 
@@ -745,15 +708,14 @@ func (s *service) waitForJobResult(ctx context.Context, jobID string) (*JobResul
 			result, err := s.GetJobResult(ctx, jobID)
 
 			if err != nil {
-				// Only log every 10 polls to reduce noise
+
 				if pollCount%10 == 0 {
-					s.logger.Printf("[JobID: %s] Still waiting for job result (polled %d times over %v)", 
+					s.logger.Printf("[JobID: %s] Still waiting for job result (polled %d times over %v)",
 						jobID, pollCount, time.Since(startTime))
 				}
-				continue // Job not ready yet
+				continue
 			}
 
-			// Log status changes
 			if lastLoggedStatus != string(result.Status) {
 				s.logger.Printf("[JobID: %s] Job status changed to %s", jobID, result.Status)
 				lastLoggedStatus = string(result.Status)
@@ -761,22 +723,22 @@ func (s *service) waitForJobResult(ctx context.Context, jobID string) (*JobResul
 
 			switch result.Status {
 			case JobStatusCompleted:
-				s.logger.Printf("[JobID: %s] Job completed successfully after %v (%d polls)", 
+				s.logger.Printf("[JobID: %s] Job completed successfully after %v (%d polls)",
 					jobID, time.Since(startTime), pollCount)
 				return result, nil
 
 			case JobStatusFailed:
-				s.logger.Printf("[JobID: %s] Job failed after %v (%d polls): %s", 
+				s.logger.Printf("[JobID: %s] Job failed after %v (%d polls): %s",
 					jobID, time.Since(startTime), pollCount, result.Error)
 				return result, fmt.Errorf("job failed: %s", result.Error)
 
 			case JobStatusPending, JobStatusRunning:
-				// Only log every 10 polls to reduce noise
+
 				if pollCount%10 == 0 {
-					s.logger.Printf("[JobID: %s] Job still in progress with status %s (waited %v so far)", 
+					s.logger.Printf("[JobID: %s] Job still in progress with status %s (waited %v so far)",
 						jobID, result.Status, time.Since(startTime))
 				}
-				continue // Still processing
+				continue
 			}
 		}
 	}
@@ -805,7 +767,7 @@ func (s *service) storeJobResult(ctx context.Context, result *JobResult) {
 	}
 
 	key := fmt.Sprintf("job_result:%s", result.JobID)
-	s.logger.Printf("[JobID: %s] Setting job result in Redis (key: %s, size: %d bytes)", 
+	s.logger.Printf("[JobID: %s] Setting job result in Redis (key: %s, size: %d bytes)",
 		result.JobID, key, len(data))
 
 	err = s.redisClient.Set(ctx, key, data, s.config.ResultTTL).Err()
@@ -814,7 +776,6 @@ func (s *service) storeJobResult(ctx context.Context, result *JobResult) {
 		return
 	}
 
-	// Remove status key
 	statusKey := fmt.Sprintf("job_status:%s", result.JobID)
 	s.logger.Printf("[JobID: %s] Removing job status key from Redis (key: %s)", result.JobID, statusKey)
 
@@ -823,11 +784,9 @@ func (s *service) storeJobResult(ctx context.Context, result *JobResult) {
 		s.logger.Printf("[JobID: %s] ERROR: Failed to remove job status key from Redis: %v", result.JobID, err)
 	}
 
-	s.logger.Printf("[JobID: %s] Job result stored successfully in Redis (took %v)", 
+	s.logger.Printf("[JobID: %s] Job result stored successfully in Redis (took %v)",
 		result.JobID, time.Since(startTime))
 }
-
-// ============= METRICS AND MONITORING =============
 
 func (s *service) reportMetrics() {
 	s.logger.Printf("Metrics reporter started, reporting interval: 10 seconds")
@@ -844,32 +803,28 @@ func (s *service) reportMetrics() {
 			active := atomic.LoadInt64(&s.activeExecutions)
 			queued := len(s.jobQueue)
 
-			// Get Redis queue length
 			queueLen, err := s.redisClient.LLen(context.Background(), "execution_queue").Result()
 			if err != nil {
 				s.logger.Printf("ERROR: Failed to get Redis queue length: %v", err)
-				queueLen = -1 // Indicate error
+				queueLen = -1
 			}
 
-			s.logger.Printf("METRICS [%d]: Active executions: %d, Internal queue: %d jobs, Redis queue: %d jobs, Uptime: %v", 
+			s.logger.Printf("METRICS [%d]: Active executions: %d, Internal queue: %d jobs, Redis queue: %d jobs, Uptime: %v",
 				reportCount, active, queued, queueLen, time.Since(startTime))
 
-			// Log worker pool utilization
 			if s.config.WorkerCount > 0 {
 				utilization := float64(active) / float64(s.config.WorkerCount) * 100
-				s.logger.Printf("METRICS [%d]: Worker pool utilization: %.2f%% (%d/%d workers active)", 
+				s.logger.Printf("METRICS [%d]: Worker pool utilization: %.2f%% (%d/%d workers active)",
 					reportCount, utilization, active, s.config.WorkerCount)
 			}
 
 		case <-s.shutdownCh:
-			s.logger.Printf("Metrics reporter shutting down after %d reports (active for %v)", 
+			s.logger.Printf("Metrics reporter shutting down after %d reports (active for %v)",
 				reportCount, time.Since(startTime))
 			return
 		}
 	}
 }
-
-// ============= SHUTDOWN =============
 
 func (s *service) Shutdown() {
 	s.logger.Println("Shutting down executor service...")

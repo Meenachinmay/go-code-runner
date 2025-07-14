@@ -9,10 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// MakeGetProblemHandler creates a handler for retrieving a problem by ID
 func MakeGetProblemHandler(problemService problems.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Parse problem ID from URL
+
 		idStr := c.Param("id")
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
@@ -56,7 +55,6 @@ func MakeGetProblemHandler(problemService problems.Service) gin.HandlerFunc {
 	}
 }
 
-// MakeListProblemsHandler creates a handler for listing all problems
 func MakeListProblemsHandler(problemService problems.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		problems, err := problemService.ListProblems(c.Request.Context())

@@ -23,7 +23,6 @@ func NewIPRateLimiter(r rate.Limit, b int) *IPRateLimiter {
 		b:   b,
 	}
 
-	// Cleanup old entries periodically
 	go i.cleanupLoop()
 
 	return i
@@ -46,7 +45,7 @@ func (i *IPRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(time.Minute)
 	for range ticker.C {
 		i.mu.Lock()
-		// Simple cleanup strategy
+
 		if len(i.ips) > 10000 {
 			i.ips = make(map[string]*rate.Limiter)
 		}

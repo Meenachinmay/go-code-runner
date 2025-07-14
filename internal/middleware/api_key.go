@@ -7,10 +7,8 @@ import (
 	"net/http"
 )
 
-// companyRepo is a package-level variable to store the company repository
 var companyRepo company.Repository
 
-// InitAPIKeyAuth initializes the company repository for API key authentication
 func InitAPIKeyAuth(db *pgxpool.Pool) {
 	companyRepo = company.New(db)
 }

@@ -4,7 +4,6 @@ import (
 	"time"
 )
 
-// Problem represents a coding problem
 type Problem struct {
 	ID          int       `json:"id" db:"id"`
 	Title       string    `json:"title" db:"title"`
@@ -14,7 +13,6 @@ type Problem struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// TestCase represents a test case for a problem
 type TestCase struct {
 	ID             int       `json:"id" db:"id"`
 	ProblemID      int       `json:"problem_id" db:"problem_id"`
@@ -25,7 +23,6 @@ type TestCase struct {
 	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// TestResult represents the result of running a test case
 type TestResult struct {
 	TestCaseID     int    `json:"test_case_id"`
 	Input          string `json:"input,omitempty"`
@@ -35,9 +32,8 @@ type TestResult struct {
 	Passed         bool   `json:"passed"`
 }
 
-// ExecutionResults represents the results of running code against multiple test cases
 type ExecutionResults struct {
-	Success    bool         `json:"success"`
+	Success     bool         `json:"success"`
 	TestResults []TestResult `json:"test_results"`
 }
 
@@ -53,20 +49,20 @@ type Company struct {
 }
 
 type CodingTest struct {
-	ID                   string     `json:"id" db:"id"`
-	CompanyID            int        `json:"company_id" db:"company_id"`
-	ProblemID            int        `json:"problem_id" db:"problem_id"`
-	CandidateName        *string    `json:"candidate_name" db:"candidate_name"`
-	CandidateEmail       *string    `json:"candidate_email" db:"candidate_email"`
-	Status               string     `json:"status" db:"status"` // pending, started, completed, expired
-	StartedAt            *time.Time `json:"started_at" db:"started_at"`
-	CompletedAt          *time.Time `json:"completed_at" db:"completed_at"`
-	ExpiresAt            time.Time  `json:"expires_at" db:"expires_at"`
-	TestDurationMinutes  int        `json:"test_duration_minutes" db:"test_duration_minutes"`
-	SubmissionCode       *string    `json:"submission_code" db:"submission_code"`
-	PassedPercentage     *int       `json:"passed_percentage" db:"passed_percentage"`
-	CreatedAt            time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at" db:"updated_at"`
+	ID                  string     `json:"id" db:"id"`
+	CompanyID           int        `json:"company_id" db:"company_id"`
+	ProblemID           int        `json:"problem_id" db:"problem_id"`
+	CandidateName       *string    `json:"candidate_name" db:"candidate_name"`
+	CandidateEmail      *string    `json:"candidate_email" db:"candidate_email"`
+	Status              string     `json:"status" db:"status"`
+	StartedAt           *time.Time `json:"started_at" db:"started_at"`
+	CompletedAt         *time.Time `json:"completed_at" db:"completed_at"`
+	ExpiresAt           time.Time  `json:"expires_at" db:"expires_at"`
+	TestDurationMinutes int        `json:"test_duration_minutes" db:"test_duration_minutes"`
+	SubmissionCode      *string    `json:"submission_code" db:"submission_code"`
+	PassedPercentage    *int       `json:"passed_percentage" db:"passed_percentage"`
+	CreatedAt           time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 const (

@@ -32,7 +32,7 @@ func (r repository) CreateTest(ctx context.Context, test *models.CodingTest) err
 		test.ExpiresAt,
 		test.TestDurationMinutes,
 		test.CreatedAt,
-		test.UpdatedAt, )
+		test.UpdatedAt)
 	return err
 
 }
