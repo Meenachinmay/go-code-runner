@@ -18,6 +18,7 @@ services:
       - ./temp_code_files:/tmp/runbox
     depends_on:
       - postgres
+      - redis
     networks:
       - app_net
 
@@ -35,8 +36,19 @@ services:
     networks:
       - app_net
 
+  redis:
+    image: redis:latest
+    container_name: code-runner-redis-local
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_net
+
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   app_net:

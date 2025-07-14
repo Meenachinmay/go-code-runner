@@ -2,13 +2,13 @@ package server
 
 import (
 	"context"
+	"github.com/go-redis/redis/v8"
+	"github.com/joho/godotenv"
 	"go-code-runner/internal/repository"
 	"go-code-runner/internal/service/coding_test"
 	"go-code-runner/internal/service/problems"
 	"log"
 	"os"
-
-	"github.com/joho/godotenv"
 
 	"go-code-runner/internal/code_executor"
 	"go-code-runner/internal/config"
@@ -50,11 +50,38 @@ func Run() {
 	}
 	logger.Println("database is up-to-date")
 
+	//------Redis-------
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
+		DB:           0,
+		PoolSize:     100,
+		MinIdleConns: 10,
+	})
+
+	// Test redis connection
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		logger.Fatalf("failed to connect to redis: %v", err)
+	}
+	defer redisClient.Close()
+	logger.Println("redis connection established")
+
 	// -----------------------------------------------------------------
 	// 3. domain services & repositories
 	// -----------------------------------------------------------------
 	repo := repository.New(dbpool)
-	executorService := code_executor.NewService(cfg.ExecutionTimeout, logger, repo)
+
+	//---- Configure code executor with scalability settings
+	executorConfig := code_executor.Config{
+		WorkerCount:      cfg.ExecutorWorkerCount,
+		MaxQueueSize:     cfg.ExecutorMaxQueueSize,
+		ExecutionTimeout: cfg.ExecutionTimeout,
+		ResultTTL:        cfg.ExecutorResultTTL,
+	}
+
+	// executor service with redis
+	executorService := code_executor.NewService(executorConfig, logger, repo, redisClient)
+
 	companyService := company.New(repo)
 	companyHandler := handler.NewCompanyHandler(companyService)
 	problemService := problems.New(repo)

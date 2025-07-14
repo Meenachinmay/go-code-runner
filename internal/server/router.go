@@ -18,11 +18,19 @@ func NewRouter(
 ) *gin.Engine {
 	r := gin.Default()
 
+	// Add rate limiting middleware (new)
+	r.Use(middleware.RateLimit(100000)) // 1000 requests per minute per IP
+
 	r.GET("/health", handler.MakeHealthHandler(db))
 
 	v1 := r.Group("/api/v1")
 	{
+		// Original execute endpoint
 		v1.POST("/execute", handler.MakeExecuteHandler(execSvc))
+
+		// New endpoint for checking job status (only new addition)
+		v1.GET("/execute/job/:job_id", handler.MakeJobStatusHandler(execSvc))
+
 		v1.GET("/problems", handler.MakeListProblemsHandler(problemService))
 		v1.GET("/problems/:id", handler.MakeGetProblemHandler(problemService))
 
@@ -52,7 +60,6 @@ func NewRouter(
 			codingTests.POST("/:test_id/start", codingTestHandler.StartTest)
 			codingTests.POST("/:test_id/submit", codingTestHandler.SubmitTest)
 		}
-
 	}
 
 	return r

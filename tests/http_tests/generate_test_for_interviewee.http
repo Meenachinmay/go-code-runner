@@ -138,15 +138,37 @@ Content-Type: application/json
 > {%
     console.log("Execute code response body:", response.body);
 
-    // Check if the code execution was successful
-    let success = response.body.success;
-    let testResults = response.body.test_results;
+    // Check if the request was accepted
+    client.test("Request executed successfully", function() {
+        client.assert(response.status === 202, "Response status is not 202");
+    });
 
-    console.log("Code execution success:", success);
+    // Save the job ID for checking status
+    if (response.body.job_id) {
+        console.log("Captured job_id:", response.body.job_id);
+        client.global.set("testJobId", response.body.job_id);
+    }
+%}
 
-    // Calculate the passed percentage
-    let passedCount = 0;
-    if (testResults) {
+### Check Job Status for Test Execution
+GET http://localhost:8080/api/v1/execute/job/{{testJobId}}
+
+> {%
+    console.log("Job status response body:", response.body);
+
+    client.test("Job status request executed successfully", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+
+    // Check if the job is completed
+    let status = response.body.status;
+    console.log("Job status:", status);
+
+    // Calculate the passed percentage if job is completed and has test results
+    if (status === "completed" && response.body.test_results) {
+        let testResults = response.body.test_results;
+        let passedCount = 0;
+
         for (let i = 0; i < testResults.length; i++) {
             if (testResults[i].passed) {
                 passedCount++;
@@ -156,6 +178,9 @@ Content-Type: application/json
         let passedPercentage = Math.round((passedCount / testResults.length) * 100);
         console.log("Passed percentage:", passedPercentage);
         client.global.set("passedPercentage", passedPercentage);
+    } else {
+        // Default to 0 if job is not completed or has no test results
+        client.global.set("passedPercentage", 0);
     }
 %}
 

@@ -66,4 +66,27 @@ docker-run:
 	docker compose -f docker-compose.local.yml up --build
 
 docker-stop:
-	docker compose down && docker compose stop
+	docker-compose -f docker-compose.local.yml down
+
+
+test-load-small:
+	@echo "Running small load test..."
+	go run cmd/loadtest/main.go \
+		-url=http://localhost:8080 \
+		-requests=100 \
+		-concurrent=10 \
+		-rampup=5s \
+		-duration=1m
+
+test-load:
+	@echo "Running load test with 10k requests..."
+	go run cmd/loadtest/main.go \
+		-url=http://localhost:8080 \
+		-requests=10000 \
+		-concurrent=100 \
+		-rampup=30s \
+		-duration=10m
+
+
+test-monitor:
+	go run cmd/monitor/main.go

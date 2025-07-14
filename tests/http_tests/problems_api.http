@@ -20,6 +20,32 @@ Content-Type: application/json
   "problem_id": 1
 }
 
+> {%
+    client.test("Request executed successfully", function() {
+        client.assert(response.status === 202, "Response status is not 202");
+    });
+
+    if (response.body.job_id) {
+        client.global.set("problem1_job_id", response.body.job_id);
+        client.log("Saved problem1_job_id: " + response.body.job_id);
+    }
+%}
+
+### Check Job Status for Problem 1
+GET http://localhost:8080/api/v1/execute/job/{{problem1_job_id}}
+
+> {%
+    client.test("Job status request executed successfully", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+
+    client.test("Job ID in response matches requested ID", function() {
+        client.assert(response.body.job_id === client.global.get("problem1_job_id"), "Job ID mismatch");
+    });
+
+    client.log("Job status: " + response.body.status);
+%}
+
 ### Execute code against test cases for problem ID 2 (Reverse String)
 POST http://localhost:8080/api/v1/execute
 Content-Type: application/json
@@ -30,6 +56,32 @@ Content-Type: application/json
   "problem_id": 2
 }
 
+> {%
+    client.test("Request executed successfully", function() {
+        client.assert(response.status === 202, "Response status is not 202");
+    });
+
+    if (response.body.job_id) {
+        client.global.set("problem2_job_id", response.body.job_id);
+        client.log("Saved problem2_job_id: " + response.body.job_id);
+    }
+%}
+
+### Check Job Status for Problem 2
+GET http://localhost:8080/api/v1/execute/job/{{problem2_job_id}}
+
+> {%
+    client.test("Job status request executed successfully", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+
+    client.test("Job ID in response matches requested ID", function() {
+        client.assert(response.body.job_id === client.global.get("problem2_job_id"), "Job ID mismatch");
+    });
+
+    client.log("Job status: " + response.body.status);
+%}
+
 ### Execute code without a problem ID
 POST http://localhost:8080/api/v1/execute
 Content-Type: application/json
@@ -38,3 +90,29 @@ Content-Type: application/json
   "language": "go",
   "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  fmt.Println(\"Hello, World!\")\n}"
 }
+
+> {%
+    client.test("Request executed successfully", function() {
+        client.assert(response.status === 202, "Response status is not 202");
+    });
+
+    if (response.body.job_id) {
+        client.global.set("simple_job_id", response.body.job_id);
+        client.log("Saved simple_job_id: " + response.body.job_id);
+    }
+%}
+
+### Check Job Status for Simple Execution
+GET http://localhost:8080/api/v1/execute/job/{{simple_job_id}}
+
+> {%
+    client.test("Job status request executed successfully", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+
+    client.test("Job ID in response matches requested ID", function() {
+        client.assert(response.body.job_id === client.global.get("simple_job_id"), "Job ID mismatch");
+    });
+
+    client.log("Job status: " + response.body.status);
+%}

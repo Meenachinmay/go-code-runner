@@ -26,7 +26,16 @@ type rawConfig struct {
 type Config struct {
 	ServerPort       string
 	DBConnStr        string
+
+	RedisAddr        string
+	RedisPassword    string
+
 	ExecutionTimeout time.Duration
+	ExecutorWorkerCount int
+	ExecutorMaxQueueSize int
+	ExecutorResultTTL time.Duration
+
+	FrontendURL string
 }
 
 func Load() (*Config, error) {
@@ -87,9 +96,26 @@ func Load() (*Config, error) {
 		raw.Postgres.SSLMode,
 	)
 
+	// Get Redis address from environment or use default based on environment
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		// In Docker environment, use the service name
+		if env == "local" && os.Getenv("APP_ENVIRONMENT") == "local" {
+			redisAddr = "redis:6379"
+		} else {
+			redisAddr = "localhost:6379"
+		}
+	}
+
 	return &Config{
 		ServerPort:       raw.ServerPort,
 		DBConnStr:        connStr,
 		ExecutionTimeout: time.Duration(raw.ExecutionTimeoutSeconds) * time.Second,
+		RedisAddr:        redisAddr,
+		RedisPassword:    "",
+		ExecutorWorkerCount: 10,
+		ExecutorMaxQueueSize: 10000,
+		ExecutorResultTTL: 15 * time.Minute,
+		FrontendURL: "http://localhost:5173",
 	}, nil
 }
