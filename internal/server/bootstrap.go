@@ -50,8 +50,8 @@ func Run() {
 		PoolSize:     300,
 		MinIdleConns: 50,
 		MaxRetries:   3,
-		DialTimeout: 5 * time.Second,
-		ReadTimeout: 1 * time.Second,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
 	})
 
@@ -64,12 +64,12 @@ func Run() {
 	repo := repository.New(dbpool)
 
 	executorConfig := code_executor.Config{
-		WorkerCount:      cfg.ExecutorWorkerCount,
-		MaxQueueSize:     cfg.ExecutorMaxQueueSize,
-		ExecutionTimeout: cfg.ExecutionTimeout,
-		ResultTTL:        cfg.ExecutorResultTTL,
+		WorkerCount:         cfg.ExecutorWorkerCount,
+		MaxQueueSize:        cfg.ExecutorMaxQueueSize,
+		ExecutionTimeout:    cfg.ExecutionTimeout,
+		ResultTTL:           cfg.ExecutorResultTTL,
 		EnableContainerPool: cfg.EnableContainerPool,
-		ContainerPoolSize:  cfg.ContainerPoolSize,
+		ContainerPoolSize:   cfg.ContainerPoolSize,
 	}
 
 	executorService := code_executor.NewService(executorConfig, logger, repo, redisClient)

@@ -119,7 +119,7 @@ func Load() (*Config, error) {
 		ExecutorMaxQueueSize: 50000,
 		ExecutorResultTTL:    15 * time.Minute,
 		EnableContainerPool:  true,
-		ContainerPoolSize:    100*2,
+		ContainerPoolSize:    100 * 2,
 		FrontendURL:          "http://localhost:8080",
 	}, nil
 }
