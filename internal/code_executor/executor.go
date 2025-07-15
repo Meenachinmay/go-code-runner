@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -21,10 +22,12 @@ import (
 )
 
 type Config struct {
-	WorkerCount      int
-	MaxQueueSize     int
-	ExecutionTimeout time.Duration
-	ResultTTL        time.Duration
+	WorkerCount         int
+	MaxQueueSize        int
+	ExecutionTimeout    time.Duration
+	ResultTTL           time.Duration
+	EnableContainerPool bool
+	ContainerPoolSize   int
 }
 
 type ExecutionResult struct {
@@ -59,6 +62,20 @@ type JobResult struct {
 	CompletedAt      time.Time
 }
 
+type Container struct {
+	ID        string
+	Available bool
+	LastUsed  time.Time
+}
+
+type ContainerPool struct {
+	mu         sync.Mutex
+	containers []*Container
+	available  chan string
+	maxSize    int
+	logger     *log.Logger
+}
+
 type service struct {
 	config      Config
 	logger      *log.Logger
@@ -70,9 +87,10 @@ type service struct {
 	modCacheDir   string
 	hostTempDir   string
 
-	jobQueue   chan *ExecutionJob
-	workerWg   sync.WaitGroup
-	shutdownCh chan struct{}
+	jobQueue      chan *ExecutionJob
+	workerWg      sync.WaitGroup
+	shutdownCh    chan struct{}
+	containerPool *ContainerPool
 
 	activeExecutions int64
 }
@@ -112,17 +130,35 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 
 	s.ensureDockerImageAvailable("golang:1.22-alpine")
 
+	//
+	containerPoolSize := cfg.WorkerCount * 2
+	if err := s.initializeContainerPool(containerPoolSize); err != nil {
+		logger.Printf("WARNING: Failed to initialize container pool: %v", err)
+	}
+
 	logger.Printf("Starting %d worker goroutines", cfg.WorkerCount)
 	s.startWorkers()
 
 	logger.Printf("Starting Redis queue processor goroutine")
-	go s.processRedisQueue()
+	for i := 0; i < 10; i++ {
+		go s.processRedisQueue()
+	}
 
 	logger.Printf("Starting metrics reporter goroutine")
 	go s.reportMetrics()
 
 	logger.Printf("Code executor service initialized successfully")
 	return s
+}
+
+func NewContainerPool(size int, logger *log.Logger) *ContainerPool {
+	pool := &ContainerPool{
+		containers: make([]*Container, 0, size),
+		available:  make(chan string, size),
+		maxSize:    size,
+		logger:     logger,
+	}
+	return pool
 }
 
 func (s *service) ensureDockerImageAvailable(imageName string) {
@@ -151,11 +187,27 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 }
 
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
-
+	// Track active executions for metrics
 	atomic.AddInt64(&s.activeExecutions, 1)
 	defer atomic.AddInt64(&s.activeExecutions, -1)
 
 	runID := uuid.New().String()
+	s.logger.Printf("[%s] Starting code execution...", runID)
+
+	// Check if we should use container pool
+	if s.containerPool != nil {
+		// Try to get a container from pool
+		containerID, err := s.getContainer(ctx)
+		if err == nil {
+			s.logger.Printf("[%s] Using pooled container: %s", runID, containerID[:12])
+			result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
+			s.returnContainer(containerID)
+			return result, err
+		}
+		s.logger.Printf("[%s] Failed to get pooled container, falling back to traditional method: %v", runID, err)
+	}
+
+	// Original implementation - PRESERVED EXACTLY AS IS
 	s.logger.Printf("[%s] Creating temp directory...", runID)
 	dirStart := time.Now()
 
@@ -193,6 +245,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
 	defer cancel()
 
+	// CRITICAL: Docker-in-Docker volume mapping
 	hostPath := strings.Replace(apiContainerTempDir, apiContainerBaseDir, s.hostTempDir, 1)
 	volumeMount := fmt.Sprintf("%s:/app", hostPath)
 
@@ -258,6 +311,196 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	}
 
 	return result, nil
+}
+
+// Execute in a pooled container while maintaining Docker-in-Docker volume setup
+func (s *service) executeInPooledContainer(ctx context.Context, containerID string, code string, language string, input string, runID string) (*ExecutionResult, error) {
+	s.logger.Printf("[%s] Executing in pooled container %s", runID, containerID[:12])
+
+	// Execute code in container using docker exec with heredoc
+	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
+	defer cancel()
+
+	// Create a unique directory in the container for this execution
+	execDir := fmt.Sprintf("/tmp/exec-%s", runID)
+
+	// Create directory in container
+	mkdirCmd := exec.CommandContext(execCtx, "docker", "exec", containerID, "mkdir", "-p", execDir)
+	if err := mkdirCmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to create exec dir in container: %w", err)
+	}
+
+	// Write code directly to container using echo/cat
+	codeFileName := "main.go"
+
+	// Write code to file in container (using heredoc to handle special characters)
+	writeCodeCmd := fmt.Sprintf("cat > %s/%s << 'EOF'\n%s\nEOF", execDir, codeFileName, code)
+	dockerWriteCode := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", writeCodeCmd)
+
+	if err := dockerWriteCode.Run(); err != nil {
+		return nil, fmt.Errorf("failed to write code to container: %w", err)
+	}
+
+	// Write input if provided
+	if input != "" {
+		writeInputCmd := fmt.Sprintf("cat > %s/input.txt << 'EOF'\n%s\nEOF", execDir, input)
+		dockerWriteInput := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", writeInputCmd)
+
+		if err := dockerWriteInput.Run(); err != nil {
+			return nil, fmt.Errorf("failed to write input to container: %w", err)
+		}
+	}
+
+	// Execute the code
+	runCmd := fmt.Sprintf("cd %s && GOFLAGS=-mod=readonly GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod go run %s", execDir, codeFileName)
+	if input != "" {
+		runCmd = fmt.Sprintf("cd %s && cat input.txt | GOFLAGS=-mod=readonly GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod go run %s", execDir, codeFileName)
+	}
+
+	dockerExec := exec.CommandContext(execCtx, "docker", "exec", containerID, "sh", "-c", runCmd)
+
+	var stdout, stderr bytes.Buffer
+	dockerExec.Stdout = &stdout
+	dockerExec.Stderr = &stderr
+
+	s.logger.Printf("[%s] Executing command in pooled container", runID)
+	execStart := time.Now()
+
+	err := dockerExec.Run()
+
+	s.logger.Printf("[%s] Execution in pooled container took %v", runID, time.Since(execStart))
+
+	// Cleanup directory in container
+	cleanupCmd := exec.Command("docker", "exec", containerID, "rm", "-rf", execDir)
+	cleanupCmd.Run()
+
+	if execCtx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("execution timed out after %v", s.config.ExecutionTimeout)
+	}
+
+	result := &ExecutionResult{
+		Output: stdout.String(),
+		Error:  stderr.String(),
+	}
+
+	if err != nil {
+		if result.Error == "" {
+			result.Error = err.Error()
+		}
+	}
+
+	return result, nil
+}
+
+// Create warm containers with proper volume mounts for caches
+func (s *service) createWarmContainer(index int) (string, error) {
+	containerName := fmt.Sprintf("executor-pool-%d-%s", index, uuid.New().String()[:8])
+
+	// Map cache directories to host paths for Docker-in-Docker
+	hostBuildCacheDir := strings.Replace(s.buildCacheDir, "/tmp/runbox", s.hostTempDir, 1)
+	hostModCacheDir := strings.Replace(s.modCacheDir, "/tmp/runbox", s.hostTempDir, 1)
+
+	args := []string{
+		"run", "-d",
+		"--name", containerName,
+		"--network", "none",
+		"--memory", "256m",
+		"--cpus", "0.5",
+		"-v", fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir),
+		"-v", fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir),
+		"--entrypoint", "tail",
+		"golang:1.22-alpine",
+		"-f", "/dev/null",
+	}
+
+	cmd := exec.Command("docker", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to create warm container: %w, output: %s", err, output)
+	}
+
+	containerID := strings.TrimSpace(string(output))
+	s.logger.Printf("Created warm container %s with ID %s", containerName, containerID[:12])
+
+	return containerID, nil
+}
+
+// Modified getContainer to handle context better
+func (s *service) getContainer(ctx context.Context) (string, error) {
+	select {
+	case containerID := <-s.containerPool.available:
+		// Verify container is still running
+		checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
+		output, err := checkCmd.Output()
+		if err != nil || strings.TrimSpace(string(output)) != "true" {
+			s.logger.Printf("Container %s is not running, creating replacement", containerID[:12])
+			// Remove dead container
+			exec.Command("docker", "rm", "-f", containerID).Run()
+			// Create new one
+			newID, err := s.createWarmContainer(len(s.containerPool.containers))
+			if err != nil {
+				return "", err
+			}
+			return newID, nil
+		}
+		return containerID, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+		return "", fmt.Errorf("no available containers in pool")
+	}
+}
+
+func (s *service) returnContainer(containerID string) {
+	select {
+	case s.containerPool.available <- containerID:
+		// Container returned to pool
+	default:
+		// Pool is full, remove the container
+		s.logger.Printf("Container pool full, removing container %s", containerID)
+		exec.Command("docker", "rm", "-f", containerID).Run()
+	}
+}
+
+// Enhanced initialization with Docker-in-Docker awareness
+func (s *service) initializeContainerPool(size int) error {
+	s.logger.Printf("Initializing container pool with %d containers", size)
+
+	// Ensure cache directories exist on host
+	os.MkdirAll(s.buildCacheDir, 0755)
+	os.MkdirAll(s.modCacheDir, 0755)
+
+	s.containerPool = NewContainerPool(size, s.logger)
+
+	// Pre-create containers with proper volume mounts
+	successCount := 0
+	for i := 0; i < size; i++ {
+		containerID, err := s.createWarmContainer(i)
+		if err != nil {
+			s.logger.Printf("Failed to create container %d: %v", i, err)
+			continue
+		}
+
+		container := &Container{
+			ID:        containerID,
+			Available: true,
+			LastUsed:  time.Now(),
+		}
+
+		s.containerPool.mu.Lock()
+		s.containerPool.containers = append(s.containerPool.containers, container)
+		s.containerPool.mu.Unlock()
+
+		s.containerPool.available <- containerID
+		successCount++
+	}
+
+	if successCount == 0 {
+		return fmt.Errorf("failed to create any containers for pool")
+	}
+
+	s.logger.Printf("Container pool initialized with %d/%d containers", successCount, size)
+	return nil
 }
 
 func (s *service) executeWithTestCasesInternal(ctx context.Context, code string, language string, testCases []*models.TestCase) (*models.ExecutionResults, error) {
@@ -629,15 +872,14 @@ func (s *service) processRedisQueue() {
 		default:
 
 			s.logger.Printf("Waiting for jobs in Redis 'execution_queue' (BLPOP with 1s timeout)")
-			result, err := s.redisClient.BLPop(context.Background(), time.Second, "execution_queue").Result()
+			result, err := s.redisClient.BLPop(context.Background(), 50 * time.Millisecond, "execution_queue").Result()
 
-			if err == redis.Nil {
-
+			if errors.Is(redis.Nil, err) {
 				continue
 			} else if err != nil {
 				s.logger.Printf("ERROR: Failed to pop job from Redis queue: %v", err)
 				s.logger.Printf("Backing off for 1 second before retrying")
-				time.Sleep(time.Second)
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
@@ -657,20 +899,22 @@ func (s *service) processRedisQueue() {
 			}
 
 			s.logger.Printf("[JobID: %s] Job unmarshaled successfully from Redis queue", job.ID)
-
 			s.logger.Printf("[JobID: %s] Attempting to send job to internal worker pool queue", job.ID)
+
 			select {
 			case s.jobQueue <- &job:
 				s.logger.Printf("[JobID: %s] Job successfully queued to worker pool", job.ID)
 			default:
 				s.logger.Printf("[JobID: %s] WARNING: Internal worker pool queue is full, pushing job back to Redis", job.ID)
-				pushErr := s.redisClient.LPush(context.Background(), "execution_queue", result[1]).Err()
-				if pushErr != nil {
-					s.logger.Printf("[JobID: %s] ERROR: Failed to push job back to Redis queue: %v", job.ID, pushErr)
-				} else {
-					s.logger.Printf("[JobID: %s] Job pushed back to Redis queue successfully", job.ID)
-				}
-				time.Sleep(100 * time.Millisecond)
+				go func() {
+					time.Sleep(10 * time.Millisecond)
+					pushErr := s.redisClient.LPush(context.Background(), "execution_queue", result[1]).Err()
+					if pushErr != nil {
+						s.logger.Printf("[JobID: %s] ERROR: Failed to push job back to Redis queue: %v", job.ID, pushErr)
+					} else {
+						s.logger.Printf("[JobID: %s] Job pushed back to Redis queue successfully", job.ID)
+					}
+				}()
 			}
 
 			if jobsProcessed%100 == 0 {

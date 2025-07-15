@@ -35,6 +35,9 @@ type Config struct {
 	ExecutorMaxQueueSize int
 	ExecutorResultTTL    time.Duration
 
+	EnableContainerPool bool
+	ContainerPoolSize   int
+
 	FrontendURL string
 }
 
@@ -112,9 +115,11 @@ func Load() (*Config, error) {
 		ExecutionTimeout:     time.Duration(raw.ExecutionTimeoutSeconds) * time.Second,
 		RedisAddr:            redisAddr,
 		RedisPassword:        "",
-		ExecutorWorkerCount:  10,
-		ExecutorMaxQueueSize: 10000,
+		ExecutorWorkerCount:  100,
+		ExecutorMaxQueueSize: 50000,
 		ExecutorResultTTL:    15 * time.Minute,
+		EnableContainerPool:  true,
+		ContainerPoolSize:    100*2,
 		FrontendURL:          "http://localhost:8080",
 	}, nil
 }
