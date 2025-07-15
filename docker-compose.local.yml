@@ -2,6 +2,11 @@ version: '3.8'
 
 services:
   api:
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 8G
     build:
       context: .
       dockerfile: local.DockerFile

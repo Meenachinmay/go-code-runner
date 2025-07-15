@@ -16,7 +16,8 @@ func NewRouter(
 	companyHandler *handler.CompanyHandler,
 	codingTestHandler *handler.CodingTestHandler,
 ) *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
 
 	r.Use(middleware.RateLimit(100000))
 

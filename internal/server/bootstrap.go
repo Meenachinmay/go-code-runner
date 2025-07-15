@@ -9,6 +9,7 @@ import (
 	"go-code-runner/internal/service/problems"
 	"log"
 	"os"
+	"time"
 
 	"go-code-runner/internal/code_executor"
 	"go-code-runner/internal/config"
@@ -46,8 +47,12 @@ func Run() {
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
 		DB:           0,
-		PoolSize:     100,
-		MinIdleConns: 10,
+		PoolSize:     300,
+		MinIdleConns: 50,
+		MaxRetries:   3,
+		DialTimeout: 5 * time.Second,
+		ReadTimeout: 1 * time.Second,
+		WriteTimeout: 1 * time.Second,
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -63,6 +68,8 @@ func Run() {
 		MaxQueueSize:     cfg.ExecutorMaxQueueSize,
 		ExecutionTimeout: cfg.ExecutionTimeout,
 		ResultTTL:        cfg.ExecutorResultTTL,
+		EnableContainerPool: cfg.EnableContainerPool,
+		ContainerPoolSize:  cfg.ContainerPoolSize,
 	}
 
 	executorService := code_executor.NewService(executorConfig, logger, repo, redisClient)

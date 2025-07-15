@@ -73,8 +73,8 @@ test-load-small:
 	@echo "Running small load test..."
 	go run cmd/loadtest/main.go \
 		-url=http://localhost:8080 \
-		-requests=100 \
-		-concurrent=10 \
+		-requests=1000 \
+		-concurrent=50 \
 		-rampup=5s \
 		-duration=1m
 
@@ -87,6 +87,14 @@ test-load:
 		-rampup=30s \
 		-duration=10m
 
+test-load-5m:
+	@echo "Running load test with 10k requests for 5 mins..."
+	go run cmd/loadtest/main.go \
+		-url=http://localhost:8080 \
+		-requests=10000 \
+		-concurrent=100 \
+		-rampup=30s \
+		-duration=5m
 
 test-monitor:
 	go run cmd/monitor/main.go
