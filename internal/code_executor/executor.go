@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +21,6 @@ import (
 
 const (
 	LogLevelError = iota
-	LogLevelWarn
 	LogLevelInfo
 	LogLevelDebug
 )
@@ -157,8 +155,7 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 
 	s.ensureDockerImageAvailable("golang:1.22-alpine")
 
-	containerPoolSize := cfg.WorkerCount * 2
-	if err := s.initializeContainerPool(containerPoolSize); err != nil {
+	if err := s.initializeContainerPool(cfg.ContainerPoolSize); err != nil {
 		logger.Printf("WARNING: Failed to initialize container pool: %v", err)
 	}
 
@@ -221,7 +218,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	runID := uuid.New().String()
 	s.logDebug("[%s] Starting code execution...", runID)
 
-	if s.containerPool != nil {
+	if s.containerPool != nil && len(s.containerPool.containers) > 10 {
 		for attempts := 0; attempts < 2; attempts++ {
 			containerID, err := s.getContainer(ctx)
 			if err == nil {
@@ -244,89 +241,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		s.logInfo("[%s] Falling back to traditional execution after pool failures", runID)
 	}
 
-	return s.executeTraditional(ctx, code, language, input, runID)
-}
-
-func (s *service) executeTraditional(ctx context.Context, code string, language string, input string, runID string) (*ExecutionResult, error) {
-	apiContainerBaseDir := "/tmp/runbox"
-	if err := os.MkdirAll(apiContainerBaseDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create base temp dir: %w", err)
-	}
-
-	apiContainerTempDir := filepath.Join(apiContainerBaseDir, "runbox-"+runID)
-	if err := os.MkdirAll(apiContainerTempDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(apiContainerTempDir)
-
-	codeFileName := "main.go"
-	codePath := filepath.Join(apiContainerTempDir, codeFileName)
-	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write code to file: %w", err)
-	}
-
-	inputFile := ""
-	if input != "" {
-		inputFile = filepath.Join(apiContainerTempDir, "input.txt")
-		if err := os.WriteFile(inputFile, []byte(input), 0644); err != nil {
-			return nil, fmt.Errorf("failed to write input to file: %w", err)
-		}
-	}
-
-	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
-	defer cancel()
-
-	hostPath := strings.Replace(apiContainerTempDir, apiContainerBaseDir, s.hostTempDir, 1)
-	volumeMount := fmt.Sprintf("%s:/app", hostPath)
-
-	hostBuildCacheDir := strings.Replace(s.buildCacheDir, "/tmp/runbox", s.hostTempDir, 1)
-	hostModCacheDir := strings.Replace(s.modCacheDir, "/tmp/runbox", s.hostTempDir, 1)
-
-	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir)
-	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir)
-
-	runCmd := fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName)
-	if inputFile != "" {
-		runCmd = fmt.Sprintf("cd /app && cat input.txt | GOFLAGS=-mod=readonly go run %s", codeFileName)
-	}
-
-	args := []string{
-		"run", "--rm",
-		"--network", "none",
-		"--memory", "256m",
-		"--cpus", "0.5",
-		"-v", volumeMount,
-		"-v", cacheMount,
-		"-v", modMount,
-		"-w", "/app",
-		"golang:1.22-alpine",
-		"sh", "-c", runCmd,
-	}
-
-	cmd := exec.CommandContext(execCtx, "docker", args...)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	if execCtx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("execution timed out after %v", s.config.ExecutionTimeout)
-	}
-
-	result := &ExecutionResult{
-		Output: stdout.String(),
-		Error:  stderr.String(),
-	}
-
-	if err != nil {
-		if result.Error == "" {
-			result.Error = err.Error()
-		}
-	}
-
-	return result, nil
+	return nil, fmt.Errorf("failed to get container")
 }
 
 func (s *service) executeInPooledContainer(ctx context.Context, containerID string, code string, language string, input string, runID string) (*ExecutionResult, error) {
