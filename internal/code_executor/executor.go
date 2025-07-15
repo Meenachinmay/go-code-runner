@@ -130,7 +130,6 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 
 	s.ensureDockerImageAvailable("golang:1.22-alpine")
 
-	//
 	containerPoolSize := cfg.WorkerCount * 2
 	if err := s.initializeContainerPool(containerPoolSize); err != nil {
 		logger.Printf("WARNING: Failed to initialize container pool: %v", err)
@@ -187,16 +186,15 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 }
 
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
-	// Track active executions for metrics
+
 	atomic.AddInt64(&s.activeExecutions, 1)
 	defer atomic.AddInt64(&s.activeExecutions, -1)
 
 	runID := uuid.New().String()
 	s.logger.Printf("[%s] Starting code execution...", runID)
 
-	// Check if we should use container pool
 	if s.containerPool != nil {
-		// Try to get a container from pool
+
 		containerID, err := s.getContainer(ctx)
 		if err == nil {
 			s.logger.Printf("[%s] Using pooled container: %s", runID, containerID[:12])
@@ -207,7 +205,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		s.logger.Printf("[%s] Failed to get pooled container, falling back to traditional method: %v", runID, err)
 	}
 
-	// Original implementation - PRESERVED EXACTLY AS IS
 	s.logger.Printf("[%s] Creating temp directory...", runID)
 	dirStart := time.Now()
 
@@ -245,7 +242,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
 	defer cancel()
 
-	// CRITICAL: Docker-in-Docker volume mapping
 	hostPath := strings.Replace(apiContainerTempDir, apiContainerBaseDir, s.hostTempDir, 1)
 	volumeMount := fmt.Sprintf("%s:/app", hostPath)
 
@@ -313,27 +309,21 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	return result, nil
 }
 
-// Execute in a pooled container while maintaining Docker-in-Docker volume setup
 func (s *service) executeInPooledContainer(ctx context.Context, containerID string, code string, language string, input string, runID string) (*ExecutionResult, error) {
 	s.logger.Printf("[%s] Executing in pooled container %s", runID, containerID[:12])
 
-	// Execute code in container using docker exec with heredoc
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
 	defer cancel()
 
-	// Create a unique directory in the container for this execution
 	execDir := fmt.Sprintf("/tmp/exec-%s", runID)
 
-	// Create directory in container
 	mkdirCmd := exec.CommandContext(execCtx, "docker", "exec", containerID, "mkdir", "-p", execDir)
 	if err := mkdirCmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to create exec dir in container: %w", err)
 	}
 
-	// Write code directly to container using echo/cat
 	codeFileName := "main.go"
 
-	// Write code to file in container (using heredoc to handle special characters)
 	writeCodeCmd := fmt.Sprintf("cat > %s/%s << 'EOF'\n%s\nEOF", execDir, codeFileName, code)
 	dockerWriteCode := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", writeCodeCmd)
 
@@ -341,7 +331,6 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 		return nil, fmt.Errorf("failed to write code to container: %w", err)
 	}
 
-	// Write input if provided
 	if input != "" {
 		writeInputCmd := fmt.Sprintf("cat > %s/input.txt << 'EOF'\n%s\nEOF", execDir, input)
 		dockerWriteInput := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", writeInputCmd)
@@ -351,7 +340,6 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 		}
 	}
 
-	// Execute the code
 	runCmd := fmt.Sprintf("cd %s && GOFLAGS=-mod=readonly GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod go run %s", execDir, codeFileName)
 	if input != "" {
 		runCmd = fmt.Sprintf("cd %s && cat input.txt | GOFLAGS=-mod=readonly GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod go run %s", execDir, codeFileName)
@@ -370,7 +358,6 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 
 	s.logger.Printf("[%s] Execution in pooled container took %v", runID, time.Since(execStart))
 
-	// Cleanup directory in container
 	cleanupCmd := exec.Command("docker", "exec", containerID, "rm", "-rf", execDir)
 	cleanupCmd.Run()
 
@@ -392,11 +379,9 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 	return result, nil
 }
 
-// Create warm containers with proper volume mounts for caches
 func (s *service) createWarmContainer(index int) (string, error) {
 	containerName := fmt.Sprintf("executor-pool-%d-%s", index, uuid.New().String()[:8])
 
-	// Map cache directories to host paths for Docker-in-Docker
 	hostBuildCacheDir := strings.Replace(s.buildCacheDir, "/tmp/runbox", s.hostTempDir, 1)
 	hostModCacheDir := strings.Replace(s.modCacheDir, "/tmp/runbox", s.hostTempDir, 1)
 
@@ -425,18 +410,17 @@ func (s *service) createWarmContainer(index int) (string, error) {
 	return containerID, nil
 }
 
-// Modified getContainer to handle context better
 func (s *service) getContainer(ctx context.Context) (string, error) {
 	select {
 	case containerID := <-s.containerPool.available:
-		// Verify container is still running
+
 		checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
 		output, err := checkCmd.Output()
 		if err != nil || strings.TrimSpace(string(output)) != "true" {
 			s.logger.Printf("Container %s is not running, creating replacement", containerID[:12])
-			// Remove dead container
+
 			exec.Command("docker", "rm", "-f", containerID).Run()
-			// Create new one
+
 			newID, err := s.createWarmContainer(len(s.containerPool.containers))
 			if err != nil {
 				return "", err
@@ -454,25 +438,22 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 func (s *service) returnContainer(containerID string) {
 	select {
 	case s.containerPool.available <- containerID:
-		// Container returned to pool
+
 	default:
-		// Pool is full, remove the container
+
 		s.logger.Printf("Container pool full, removing container %s", containerID)
 		exec.Command("docker", "rm", "-f", containerID).Run()
 	}
 }
 
-// Enhanced initialization with Docker-in-Docker awareness
 func (s *service) initializeContainerPool(size int) error {
 	s.logger.Printf("Initializing container pool with %d containers", size)
 
-	// Ensure cache directories exist on host
 	os.MkdirAll(s.buildCacheDir, 0755)
 	os.MkdirAll(s.modCacheDir, 0755)
 
 	s.containerPool = NewContainerPool(size, s.logger)
 
-	// Pre-create containers with proper volume mounts
 	successCount := 0
 	for i := 0; i < size; i++ {
 		containerID, err := s.createWarmContainer(i)
@@ -872,7 +853,7 @@ func (s *service) processRedisQueue() {
 		default:
 
 			s.logger.Printf("Waiting for jobs in Redis 'execution_queue' (BLPOP with 1s timeout)")
-			result, err := s.redisClient.BLPop(context.Background(), 50 * time.Millisecond, "execution_queue").Result()
+			result, err := s.redisClient.BLPop(context.Background(), 50*time.Millisecond, "execution_queue").Result()
 
 			if errors.Is(redis.Nil, err) {
 				continue

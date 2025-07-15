@@ -2,3 +2,5 @@
 .env.test
 temp_code_files/
 /cmd/loadtest
+/internal/test_comments.go
+/remove_comments.go
