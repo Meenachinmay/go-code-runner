@@ -38,6 +38,9 @@ type Config struct {
 	EnableContainerPool bool
 	ContainerPoolSize   int
 
+	HTTPWorkerCount  int
+	HTTPMaxQueueSize int
+
 	FrontendURL string
 }
 
@@ -120,6 +123,8 @@ func Load() (*Config, error) {
 		ExecutorResultTTL:    15 * time.Minute,
 		EnableContainerPool:  true,
 		ContainerPoolSize:    100 * 2,
+		HTTPWorkerCount:      200,
+		HTTPMaxQueueSize:     10000,
 		FrontendURL:          "http://localhost:8080",
 	}, nil
 }

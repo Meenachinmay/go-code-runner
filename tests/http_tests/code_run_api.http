@@ -25,6 +25,24 @@ Content-Type: application/json
     }
 %}
 
+### Check Job Status for Hello World
+GET http://localhost:8080/api/v1/execute/job/{{job_id_hello}}
+
+> {%
+    client.test("Job status request executed successfully", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+
+    client.test("Job ID in response matches requested ID", function() {
+        client.assert(response.body.job_id === client.global.get("job_id_hello"), "Job ID mismatch");
+    });
+
+    client.log("Job status: " + response.body.status);
+%}
+
+
+
+
 ### Execute Go Code - Adding Two Numbers
 POST http://localhost:8080/api/v1/execute
 Content-Type: application/json
@@ -45,6 +63,24 @@ Content-Type: application/json
     }
 %}
 
+### Check Job Status for Adding Two Numbers
+GET http://localhost:8080/api/v1/execute/job/{{job_id_sum}}
+
+> {%
+    client.test("Job status request executed successfully", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+
+    client.test("Job ID in response matches requested ID", function() {
+        client.assert(response.body.job_id === client.global.get("job_id_sum"), "Job ID mismatch");
+    });
+
+    client.log("Job status: " + response.body.status);
+%}
+
+
+
+
 ### Execute Go Code - Sorting an Array
 POST http://localhost:8080/api/v1/execute
 Content-Type: application/json
@@ -64,58 +100,6 @@ Content-Type: application/json
         client.log("Saved job_id_sort: " + response.body.job_id);
     }
 %}
-
-### Execute Go Code with Problem ID
-POST http://localhost:8080/api/v1/execute
-Content-Type: application/json
-
-{
-  "language": "go",
-  "code": "package main\n\nimport \"fmt\"\n\nfunc main() {\n  var a, b int\n  fmt.Scan(&a, &b)\n  fmt.Println(a + b)\n}",
-  "problem_id": 1
-}
-
-> {%
-    client.test("Request executed successfully", function() {
-        client.assert(response.status === 202, "Response status is not 202");
-    });
-
-    if (response.body.job_id) {
-        client.global.set("job_id_problem", response.body.job_id);
-        client.log("Saved job_id_problem: " + response.body.job_id);
-    }
-%}
-
-### Check Job Status for Hello World
-GET http://localhost:8080/api/v1/execute/job/{{job_id_hello}}
-
-> {%
-    client.test("Job status request executed successfully", function() {
-        client.assert(response.status === 200, "Response status is not 200");
-    });
-
-    client.test("Job ID in response matches requested ID", function() {
-        client.assert(response.body.job_id === client.global.get("job_id_hello"), "Job ID mismatch");
-    });
-
-    client.log("Job status: " + response.body.status);
-%}
-
-### Check Job Status for Adding Two Numbers
-GET http://localhost:8080/api/v1/execute/job/{{job_id_sum}}
-
-> {%
-    client.test("Job status request executed successfully", function() {
-        client.assert(response.status === 200, "Response status is not 200");
-    });
-
-    client.test("Job ID in response matches requested ID", function() {
-        client.assert(response.body.job_id === client.global.get("job_id_sum"), "Job ID mismatch");
-    });
-
-    client.log("Job status: " + response.body.status);
-%}
-
 ### Check Job Status for Sorting an Array
 GET http://localhost:8080/api/v1/execute/job/{{job_id_sort}}
 
@@ -126,21 +110,6 @@ GET http://localhost:8080/api/v1/execute/job/{{job_id_sort}}
 
     client.test("Job ID in response matches requested ID", function() {
         client.assert(response.body.job_id === client.global.get("job_id_sort"), "Job ID mismatch");
-    });
-
-    client.log("Job status: " + response.body.status);
-%}
-
-### Check Job Status for Problem ID
-GET http://localhost:8080/api/v1/execute/job/{{job_id_problem}}
-
-> {%
-    client.test("Job status request executed successfully", function() {
-        client.assert(response.status === 200, "Response status is not 200");
-    });
-
-    client.test("Job ID in response matches requested ID", function() {
-        client.assert(response.body.job_id === client.global.get("job_id_problem"), "Job ID mismatch");
     });
 
     client.log("Job status: " + response.body.status);

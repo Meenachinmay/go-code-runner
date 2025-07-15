@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +18,13 @@ import (
 	"github.com/google/uuid"
 	"go-code-runner/internal/models"
 	testcaserepo "go-code-runner/internal/repository/test_cases"
+)
+
+const (
+	LogLevelError = iota
+	LogLevelWarn
+	LogLevelInfo
+	LogLevelDebug
 )
 
 type Config struct {
@@ -79,6 +85,7 @@ type ContainerPool struct {
 type service struct {
 	config      Config
 	logger      *log.Logger
+	logLevel    int
 	imageCache  map[string]bool
 	repository  testcaserepo.TestCaseRepository
 	redisClient *redis.Client
@@ -95,6 +102,22 @@ type service struct {
 	activeExecutions int64
 }
 
+func (s *service) logDebug(format string, v ...interface{}) {
+	if s.logLevel >= LogLevelDebug {
+		s.logger.Printf(format, v...)
+	}
+}
+
+func (s *service) logInfo(format string, v ...interface{}) {
+	if s.logLevel >= LogLevelInfo {
+		s.logger.Printf(format, v...)
+	}
+}
+
+func (s *service) logError(format string, v ...interface{}) {
+	s.logger.Printf("ERROR: "+format, v...)
+}
+
 func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseRepository, redisClient *redis.Client) Service {
 	logger.Printf("Initializing code executor service with config: WorkerCount=%d, MaxQueueSize=%d, ExecutionTimeout=%v, ResultTTL=%v",
 		cfg.WorkerCount, cfg.MaxQueueSize, cfg.ExecutionTimeout, cfg.ResultTTL)
@@ -102,7 +125,6 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 	buildCacheDir := "/tmp/runbox/go-build-cache"
 	modCacheDir := "/tmp/runbox/go-mod-cache"
 
-	logger.Printf("Creating cache directories: buildCache=%s, modCache=%s", buildCacheDir, modCacheDir)
 	os.MkdirAll(buildCacheDir, 0755)
 	os.MkdirAll(modCacheDir, 0755)
 
@@ -110,11 +132,18 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 	if hostTempDir == "" {
 		logger.Fatal("HOST_TEMP_DIR environment variable must be set")
 	}
-	logger.Printf("Using host temp directory: %s", hostTempDir)
+
+	logLevel := LogLevelInfo
+	if os.Getenv("DEBUG") == "true" {
+		logLevel = LogLevelDebug
+	} else if os.Getenv("ENV") == "production" {
+		logLevel = LogLevelError
+	}
 
 	s := &service{
 		config:           cfg,
 		logger:           logger,
+		logLevel:         logLevel,
 		imageCache:       make(map[string]bool),
 		repository:       repo,
 		redisClient:      redisClient,
@@ -126,8 +155,6 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 		activeExecutions: 0,
 	}
 
-	logger.Printf("Redis connection established successfully")
-
 	s.ensureDockerImageAvailable("golang:1.22-alpine")
 
 	containerPoolSize := cfg.WorkerCount * 2
@@ -135,15 +162,17 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 		logger.Printf("WARNING: Failed to initialize container pool: %v", err)
 	}
 
-	logger.Printf("Starting %d worker goroutines", cfg.WorkerCount)
 	s.startWorkers()
 
-	logger.Printf("Starting Redis queue processor goroutine")
-	for i := 0; i < 10; i++ {
+	numProcessors := 20
+	if cfg.WorkerCount > 100 {
+		numProcessors = cfg.WorkerCount / 5
+	}
+	logger.Printf("Starting %d Redis queue processor goroutines", numProcessors)
+	for i := 0; i < numProcessors; i++ {
 		go s.processRedisQueue()
 	}
 
-	logger.Printf("Starting metrics reporter goroutine")
 	go s.reportMetrics()
 
 	logger.Printf("Code executor service initialized successfully")
@@ -186,28 +215,39 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 }
 
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
-
 	atomic.AddInt64(&s.activeExecutions, 1)
 	defer atomic.AddInt64(&s.activeExecutions, -1)
 
 	runID := uuid.New().String()
-	s.logger.Printf("[%s] Starting code execution...", runID)
+	s.logDebug("[%s] Starting code execution...", runID)
 
 	if s.containerPool != nil {
+		for attempts := 0; attempts < 2; attempts++ {
+			containerID, err := s.getContainer(ctx)
+			if err == nil {
+				s.logDebug("[%s] Using pooled container: %s (attempt %d)", runID, containerID[:12], attempts+1)
 
-		containerID, err := s.getContainer(ctx)
-		if err == nil {
-			s.logger.Printf("[%s] Using pooled container: %s", runID, containerID[:12])
-			result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
-			s.returnContainer(containerID)
-			return result, err
+				result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
+
+				s.returnContainer(containerID)
+
+				if err == nil {
+					return result, nil
+				}
+
+				s.logDebug("[%s] Execution failed in pooled container: %v", runID, err)
+				continue
+			}
+			s.logDebug("[%s] Failed to get pooled container (attempt %d): %v", runID, attempts+1, err)
 		}
-		s.logger.Printf("[%s] Failed to get pooled container, falling back to traditional method: %v", runID, err)
+
+		s.logInfo("[%s] Falling back to traditional execution after pool failures", runID)
 	}
 
-	s.logger.Printf("[%s] Creating temp directory...", runID)
-	dirStart := time.Now()
+	return s.executeTraditional(ctx, code, language, input, runID)
+}
 
+func (s *service) executeTraditional(ctx context.Context, code string, language string, input string, runID string) (*ExecutionResult, error) {
 	apiContainerBaseDir := "/tmp/runbox"
 	if err := os.MkdirAll(apiContainerBaseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create base temp dir: %w", err)
@@ -218,17 +258,12 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(apiContainerTempDir)
-	s.logger.Printf("[%s] Temp directory created at %s. (took %v)", runID, apiContainerTempDir, time.Since(dirStart))
-
-	s.logger.Printf("[%s] Writing code to file...", runID)
-	writeStart := time.Now()
 
 	codeFileName := "main.go"
 	codePath := filepath.Join(apiContainerTempDir, codeFileName)
 	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write code to file: %w", err)
 	}
-	s.logger.Printf("[%s] Code written to %s. (took %v)", runID, codePath, time.Since(writeStart))
 
 	inputFile := ""
 	if input != "" {
@@ -236,7 +271,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		if err := os.WriteFile(inputFile, []byte(input), 0644); err != nil {
 			return nil, fmt.Errorf("failed to write input to file: %w", err)
 		}
-		s.logger.Printf("[%s] Input written to %s", runID, inputFile)
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
@@ -251,11 +285,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	cacheMount := fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir)
 	modMount := fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir)
 
-	s.logger.Printf("[%s] Container temp dir: %s", runID, apiContainerTempDir)
-	s.logger.Printf("[%s] Host mount path: %s", runID, hostPath)
-
 	runCmd := fmt.Sprintf("cd /app && GOFLAGS=-mod=readonly go run %s", codeFileName)
-
 	if inputFile != "" {
 		runCmd = fmt.Sprintf("cd /app && cat input.txt | GOFLAGS=-mod=readonly go run %s", codeFileName)
 	}
@@ -279,16 +309,9 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	s.logger.Printf("[%s] Executing docker command: docker %v", runID, args)
-	dockerStart := time.Now()
-
 	err := cmd.Run()
 
-	dockerDuration := time.Since(dockerStart)
-	s.logger.Printf("[%s] Docker command finished. (took %v)", runID, dockerDuration)
-
 	if execCtx.Err() == context.DeadlineExceeded {
-		s.logger.Printf("[%s] CONTEXT DEADLINE EXCEEDED. Total execution time: %v", runID, dockerDuration)
 		return nil, fmt.Errorf("execution timed out after %v", s.config.ExecutionTimeout)
 	}
 
@@ -301,65 +324,57 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
-		s.logger.Printf("[%s] Command failed with error: %s", runID, result.Error)
-	} else {
-		s.logger.Printf("[%s] Command executed successfully.", runID)
 	}
 
 	return result, nil
 }
 
 func (s *service) executeInPooledContainer(ctx context.Context, containerID string, code string, language string, input string, runID string) (*ExecutionResult, error) {
-	s.logger.Printf("[%s] Executing in pooled container %s", runID, containerID[:12])
+	s.logDebug("[%s] Executing in pooled container %s", runID, containerID[:12])
 
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
 	defer cancel()
 
-	execDir := fmt.Sprintf("/tmp/exec-%s", runID)
-
+	execDir := fmt.Sprintf("/tmp/exec_%s", runID)
 	mkdirCmd := exec.CommandContext(execCtx, "docker", "exec", containerID, "mkdir", "-p", execDir)
 	if err := mkdirCmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to create exec dir in container: %w", err)
+		return nil, fmt.Errorf("failed to create exec dir: %w", err)
 	}
 
-	codeFileName := "main.go"
+	codeFile := fmt.Sprintf("%s/main.go", execDir)
+	writeCodeCmd := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "tee", codeFile)
+	writeCodeCmd.Stdin = strings.NewReader(code)
 
-	writeCodeCmd := fmt.Sprintf("cat > %s/%s << 'EOF'\n%s\nEOF", execDir, codeFileName, code)
-	dockerWriteCode := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", writeCodeCmd)
-
-	if err := dockerWriteCode.Run(); err != nil {
-		return nil, fmt.Errorf("failed to write code to container: %w", err)
+	if err := writeCodeCmd.Run(); err != nil {
+		exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+		return nil, fmt.Errorf("failed to write code: %w", err)
 	}
+
+	execCmd := fmt.Sprintf(`cd %s && export GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod GOFLAGS=-mod=readonly`, execDir)
 
 	if input != "" {
-		writeInputCmd := fmt.Sprintf("cat > %s/input.txt << 'EOF'\n%s\nEOF", execDir, input)
-		dockerWriteInput := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", writeInputCmd)
 
-		if err := dockerWriteInput.Run(); err != nil {
-			return nil, fmt.Errorf("failed to write input to container: %w", err)
+		inputFile := fmt.Sprintf("%s/input.txt", execDir)
+		writeInputCmd := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "tee", inputFile)
+		writeInputCmd.Stdin = strings.NewReader(input)
+		if err := writeInputCmd.Run(); err != nil {
+			exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+			return nil, fmt.Errorf("failed to write input: %w", err)
 		}
+		execCmd += " && cat input.txt | go run main.go"
+	} else {
+		execCmd += " && go run main.go"
 	}
 
-	runCmd := fmt.Sprintf("cd %s && GOFLAGS=-mod=readonly GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod go run %s", execDir, codeFileName)
-	if input != "" {
-		runCmd = fmt.Sprintf("cd %s && cat input.txt | GOFLAGS=-mod=readonly GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod go run %s", execDir, codeFileName)
-	}
-
-	dockerExec := exec.CommandContext(execCtx, "docker", "exec", containerID, "sh", "-c", runCmd)
+	dockerExec := exec.CommandContext(execCtx, "docker", "exec", containerID, "sh", "-c", execCmd)
 
 	var stdout, stderr bytes.Buffer
 	dockerExec.Stdout = &stdout
 	dockerExec.Stderr = &stderr
 
-	s.logger.Printf("[%s] Executing command in pooled container", runID)
-	execStart := time.Now()
-
 	err := dockerExec.Run()
 
-	s.logger.Printf("[%s] Execution in pooled container took %v", runID, time.Since(execStart))
-
-	cleanupCmd := exec.Command("docker", "exec", containerID, "rm", "-rf", execDir)
-	cleanupCmd.Run()
+	exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
 
 	if execCtx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("execution timed out after %v", s.config.ExecutionTimeout)
@@ -370,10 +385,8 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 		Error:  stderr.String(),
 	}
 
-	if err != nil {
-		if result.Error == "" {
-			result.Error = err.Error()
-		}
+	if err != nil && result.Error == "" {
+		result.Error = err.Error()
 	}
 
 	return result, nil
@@ -393,9 +406,8 @@ func (s *service) createWarmContainer(index int) (string, error) {
 		"--cpus", "0.5",
 		"-v", fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir),
 		"-v", fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir),
-		"--entrypoint", "tail",
 		"golang:1.22-alpine",
-		"-f", "/dev/null",
+		"sh", "-c", "while true; do sleep 3600; done",
 	}
 
 	cmd := exec.Command("docker", args...)
@@ -405,9 +417,45 @@ func (s *service) createWarmContainer(index int) (string, error) {
 	}
 
 	containerID := strings.TrimSpace(string(output))
-	s.logger.Printf("Created warm container %s with ID %s", containerName, containerID[:12])
+
+	time.Sleep(100 * time.Millisecond)
+
+	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
+	checkOutput, err := checkCmd.Output()
+	if err != nil || strings.TrimSpace(string(checkOutput)) != "true" {
+
+		exec.Command("docker", "rm", "-f", containerID).Run()
+		return "", fmt.Errorf("container failed to start properly")
+	}
+
+	s.logDebug("Created and verified warm container %s", containerID[:12])
+
+	go s.prewarmContainer(containerID)
 
 	return containerID, nil
+}
+
+func (s *service) prewarmContainer(containerID string) {
+
+	prewarmCode := `package main
+	import (
+		_ "fmt"
+		_ "strings"
+		_ "sort"
+		_ "io"
+		_ "os"
+		_ "time"
+	)
+	func main() {}`
+
+	cmd := exec.Command("docker", "exec", "-i", containerID, "sh", "-c",
+		fmt.Sprintf("echo '%s' | go build -o /dev/null -", prewarmCode))
+
+	if err := cmd.Run(); err != nil {
+		s.logDebug("Failed to prewarm container %s: %v", containerID[:12], err)
+	} else {
+		s.logDebug("Successfully prewarmed container %s", containerID[:12])
+	}
 }
 
 func (s *service) getContainer(ctx context.Context) (string, error) {
@@ -416,33 +464,68 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 
 		checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
 		output, err := checkCmd.Output()
-		if err != nil || strings.TrimSpace(string(output)) != "true" {
-			s.logger.Printf("Container %s is not running, creating replacement", containerID[:12])
 
-			exec.Command("docker", "rm", "-f", containerID).Run()
+		isRunning := err == nil && strings.TrimSpace(string(output)) == "true"
+
+		if !isRunning {
+			s.logDebug("Container %s is not running, creating replacement", containerID[:12])
+
+			go func() {
+				exec.Command("docker", "rm", "-f", containerID).Run()
+			}()
 
 			newID, err := s.createWarmContainer(len(s.containerPool.containers))
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("failed to create replacement container: %w", err)
 			}
+
 			return newID, nil
 		}
+
 		return containerID, nil
+
 	case <-ctx.Done():
 		return "", ctx.Err()
+
 	default:
-		return "", fmt.Errorf("no available containers in pool")
+
+		s.logDebug("No containers available in pool, creating on-demand container")
+		return s.createOnDemandContainer()
 	}
 }
 
+func (s *service) createOnDemandContainer() (string, error) {
+	containerID, err := s.createWarmContainer(9999)
+	if err != nil {
+		return "", err
+	}
+
+	return containerID, nil
+}
+
 func (s *service) returnContainer(containerID string) {
+
+	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
+	output, err := checkCmd.Output()
+
+	if err != nil || strings.TrimSpace(string(output)) != "true" {
+
+		s.logDebug("Not returning dead container %s to pool", containerID[:12])
+		go func() {
+			exec.Command("docker", "rm", "-f", containerID).Run()
+		}()
+		return
+	}
+
 	select {
 	case s.containerPool.available <- containerID:
 
 	default:
 
-		s.logger.Printf("Container pool full, removing container %s", containerID)
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		s.logDebug("Container pool full, removing container %s", containerID[:12])
+		go func() {
+			exec.Command("docker", "rm", "-f", containerID).Run()
+		}()
 	}
 }
 
@@ -454,34 +537,105 @@ func (s *service) initializeContainerPool(size int) error {
 
 	s.containerPool = NewContainerPool(size, s.logger)
 
-	successCount := 0
-	for i := 0; i < size; i++ {
-		containerID, err := s.createWarmContainer(i)
-		if err != nil {
-			s.logger.Printf("Failed to create container %d: %v", i, err)
-			continue
-		}
-
-		container := &Container{
-			ID:        containerID,
-			Available: true,
-			LastUsed:  time.Now(),
-		}
-
-		s.containerPool.mu.Lock()
-		s.containerPool.containers = append(s.containerPool.containers, container)
-		s.containerPool.mu.Unlock()
-
-		s.containerPool.available <- containerID
-		successCount++
+	concurrentCreations := 10
+	if size < concurrentCreations {
+		concurrentCreations = size
 	}
 
-	if successCount == 0 {
+	semaphore := make(chan struct{}, concurrentCreations)
+	var wg sync.WaitGroup
+	successCount := int32(0)
+
+	for i := 0; i < size; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			containerID, err := s.createWarmContainer(index)
+			if err != nil {
+				s.logger.Printf("Failed to create container %d: %v", index, err)
+				return
+			}
+
+			container := &Container{
+				ID:        containerID,
+				Available: true,
+				LastUsed:  time.Now(),
+			}
+
+			s.containerPool.mu.Lock()
+			s.containerPool.containers = append(s.containerPool.containers, container)
+			s.containerPool.mu.Unlock()
+
+			select {
+			case s.containerPool.available <- containerID:
+				atomic.AddInt32(&successCount, 1)
+			default:
+
+				s.logger.Printf("WARNING: Could not add container %s to available pool", containerID[:12])
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	finalCount := atomic.LoadInt32(&successCount)
+	if finalCount == 0 {
 		return fmt.Errorf("failed to create any containers for pool")
 	}
 
-	s.logger.Printf("Container pool initialized with %d/%d containers", successCount, size)
+	s.logger.Printf("Container pool initialized with %d/%d containers", finalCount, size)
+
+	go s.maintainContainerPool()
+
 	return nil
+}
+
+func (s *service) maintainContainerPool() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case <-ticker.C:
+			s.containerPool.mu.Lock()
+			totalContainers := len(s.containerPool.containers)
+			s.containerPool.mu.Unlock()
+
+			availableCount := len(s.containerPool.available)
+
+			if availableCount < totalContainers/4 {
+				s.logDebug("Container pool low (%d/%d), creating more containers",
+					availableCount, totalContainers)
+
+				for i := 0; i < 5; i++ {
+					go func() {
+						if containerID, err := s.createWarmContainer(int(time.Now().Unix())); err == nil {
+							s.containerPool.mu.Lock()
+							s.containerPool.containers = append(s.containerPool.containers, &Container{
+								ID:        containerID,
+								Available: true,
+								LastUsed:  time.Now(),
+							})
+							s.containerPool.mu.Unlock()
+
+							select {
+							case s.containerPool.available <- containerID:
+								s.logDebug("Added new container to pool")
+							default:
+								exec.Command("docker", "rm", "-f", containerID).Run()
+							}
+						}
+					}()
+				}
+			}
+		}
+	}
 }
 
 func (s *service) executeWithTestCasesInternal(ctx context.Context, code string, language string, testCases []*models.TestCase) (*models.ExecutionResults, error) {
@@ -696,24 +850,25 @@ func (s *service) startWorkers() {
 
 func (s *service) worker(id int) {
 	defer s.workerWg.Done()
-	startTime := time.Now()
 
-	s.logger.Printf("[Worker-%d] Worker started and waiting for jobs", id)
+	s.logDebug("[Worker-%d] Started", id)
 	jobsProcessed := 0
 
 	for {
 		select {
 		case job := <-s.jobQueue:
 			jobsProcessed++
-			s.logger.Printf("[Worker-%d] Received job %s (total jobs processed: %d)", id, job.ID, jobsProcessed)
+			s.logDebug("[Worker-%d] Processing job %s", id, job.ID)
 			jobStartTime := time.Now()
 			s.processJob(job)
-			s.logger.Printf("[Worker-%d] Completed job %s (took %v, total jobs processed: %d)",
-				id, job.ID, time.Since(jobStartTime), jobsProcessed)
+
+			duration := time.Since(jobStartTime)
+			if duration > 5*time.Second {
+				s.logInfo("[Worker-%d] Slow job %s took %v", id, job.ID, duration)
+			}
 
 		case <-s.shutdownCh:
-			s.logger.Printf("[Worker-%d] Shutting down after processing %d jobs (active for %v)",
-				id, jobsProcessed, time.Since(startTime))
+			s.logInfo("[Worker-%d] Shutting down after %d jobs", id, jobsProcessed)
 			return
 		}
 	}
@@ -722,45 +877,35 @@ func (s *service) worker(id int) {
 func (s *service) processJob(job *ExecutionJob) {
 	ctx := context.Background()
 	startTime := time.Now()
-	s.logger.Printf("[JobID: %s] Starting job processing", job.ID)
 
-	waitTime := startTime.Sub(job.SubmitTime)
-	s.logger.Printf("[JobID: %s] Job waited in queue for %v before processing", job.ID, waitTime)
-
-	s.logger.Printf("[JobID: %s] Updating job status to %s", job.ID, JobStatusRunning)
 	s.updateJobStatus(ctx, job.ID, JobStatusRunning)
 
 	var result *JobResult
 
 	if job.ProblemID > 0 {
-		s.logger.Printf("[JobID: %s] Processing job for problem ID %d", job.ID, job.ProblemID)
-
-		s.logger.Printf("[JobID: %s] Fetching test cases for problem ID %d", job.ID, job.ProblemID)
 		testCases, err := s.repository.GetTestCasesByProblemID(ctx, job.ProblemID)
 
 		if err != nil {
-			s.logger.Printf("[JobID: %s] ERROR: Failed to get test cases for problem %d: %v", job.ID, job.ProblemID, err)
+			s.logError("[JobID: %s] Failed to get test cases: %v", job.ID, err)
 			result = &JobResult{
 				JobID:       job.ID,
 				Status:      JobStatusFailed,
-				Error:       fmt.Sprintf("failed to get test cases for problem %d: %v", job.ProblemID, err),
+				Error:       fmt.Sprintf("failed to get test cases: %v", err),
 				CompletedAt: time.Now(),
 			}
 		} else if len(testCases) == 0 {
-			s.logger.Printf("[JobID: %s] ERROR: No test cases found for problem %d", job.ID, job.ProblemID)
 			result = &JobResult{
 				JobID:       job.ID,
 				Status:      JobStatusFailed,
-				Error:       fmt.Sprintf("no test cases found for problem %d", job.ProblemID),
+				Error:       "no test cases found",
 				CompletedAt: time.Now(),
 			}
 		} else {
-			s.logger.Printf("[JobID: %s] Found %d test cases for problem %d, executing code", job.ID, len(testCases), job.ProblemID)
 			execResults, err := s.executeWithTestCasesInternal(ctx, job.Code, job.Language, testCases)
-
 			completedAt := time.Now()
+
 			if err != nil {
-				s.logger.Printf("[JobID: %s] ERROR: Code execution failed: %v", job.ID, err)
+				s.logError("[JobID: %s] Execution failed: %v", job.ID, err)
 				result = &JobResult{
 					JobID:            job.ID,
 					Status:           JobStatusFailed,
@@ -769,8 +914,6 @@ func (s *service) processJob(job *ExecutionJob) {
 					CompletedAt:      completedAt,
 				}
 			} else {
-				s.logger.Printf("[JobID: %s] Code execution completed successfully with %d test results",
-					job.ID, len(execResults.TestResults))
 				result = &JobResult{
 					JobID:            job.ID,
 					Status:           JobStatusCompleted,
@@ -780,13 +923,10 @@ func (s *service) processJob(job *ExecutionJob) {
 			}
 		}
 	} else if len(job.TestCases) > 0 {
-
-		s.logger.Printf("[JobID: %s] Processing job with %d provided test cases", job.ID, len(job.TestCases))
 		execResults, err := s.executeWithTestCasesInternal(ctx, job.Code, job.Language, job.TestCases)
-
 		completedAt := time.Now()
+
 		if err != nil {
-			s.logger.Printf("[JobID: %s] ERROR: Code execution with test cases failed: %v", job.ID, err)
 			result = &JobResult{
 				JobID:            job.ID,
 				Status:           JobStatusFailed,
@@ -795,8 +935,6 @@ func (s *service) processJob(job *ExecutionJob) {
 				CompletedAt:      completedAt,
 			}
 		} else {
-			s.logger.Printf("[JobID: %s] Code execution with test cases completed successfully with %d test results",
-				job.ID, len(execResults.TestResults))
 			result = &JobResult{
 				JobID:            job.ID,
 				Status:           JobStatusCompleted,
@@ -805,13 +943,10 @@ func (s *service) processJob(job *ExecutionJob) {
 			}
 		}
 	} else {
-
-		s.logger.Printf("[JobID: %s] Processing simple execution job without test cases", job.ID)
 		execResult, err := s.executeCode(ctx, job.Code, job.Language, "")
-
 		completedAt := time.Now()
+
 		if err != nil {
-			s.logger.Printf("[JobID: %s] ERROR: Simple code execution failed: %v", job.ID, err)
 			result = &JobResult{
 				JobID:           job.ID,
 				Status:          JobStatusFailed,
@@ -820,7 +955,6 @@ func (s *service) processJob(job *ExecutionJob) {
 				CompletedAt:     completedAt,
 			}
 		} else {
-			s.logger.Printf("[JobID: %s] Simple code execution completed successfully", job.ID)
 			result = &JobResult{
 				JobID:           job.ID,
 				Status:          JobStatusCompleted,
@@ -830,76 +964,75 @@ func (s *service) processJob(job *ExecutionJob) {
 		}
 	}
 
-	s.logger.Printf("[JobID: %s] Storing job result in Redis with status %s", job.ID, result.Status)
 	s.storeJobResult(ctx, result)
 
 	processingTime := time.Since(startTime)
-	totalTime := result.CompletedAt.Sub(job.SubmitTime)
-	s.logger.Printf("[JobID: %s] Job processing completed: status=%s, processing_time=%v, total_time=%v",
-		job.ID, result.Status, processingTime, totalTime)
+	if processingTime > 5*time.Second {
+		s.logInfo("[JobID: %s] Slow job completed in %v", job.ID, processingTime)
+	}
 }
 
 func (s *service) processRedisQueue() {
-	s.logger.Printf("Redis queue processor started, monitoring 'execution_queue'")
+	s.logInfo("Redis queue processor started")
 	jobsProcessed := 0
 	startTime := time.Now()
+
+	batchSize := 10
+	batchBuffer := make([]string, 0, batchSize)
 
 	for {
 		select {
 		case <-s.shutdownCh:
-			s.logger.Printf("Redis queue processor shutting down after processing %d jobs (active for %v)",
+			s.logInfo("Redis queue processor shutting down after processing %d jobs (active for %v)",
 				jobsProcessed, time.Since(startTime))
 			return
 		default:
 
-			s.logger.Printf("Waiting for jobs in Redis 'execution_queue' (BLPOP with 1s timeout)")
-			result, err := s.redisClient.BLPop(context.Background(), 50*time.Millisecond, "execution_queue").Result()
+			ctx := context.Background()
 
-			if errors.Is(redis.Nil, err) {
-				continue
-			} else if err != nil {
-				s.logger.Printf("ERROR: Failed to pop job from Redis queue: %v", err)
-				s.logger.Printf("Backing off for 1 second before retrying")
-				time.Sleep(100 * time.Millisecond)
-				continue
+			batchBuffer = batchBuffer[:0]
+
+			for i := 0; i < batchSize; i++ {
+				result, err := s.redisClient.LPop(ctx, "execution_queue").Result()
+				if err == redis.Nil {
+					break
+				} else if err != nil {
+					s.logError("Failed to pop from Redis: %v", err)
+					break
+				}
+				batchBuffer = append(batchBuffer, result)
 			}
 
-			if len(result) < 2 {
-				s.logger.Printf("WARNING: Unexpected result from Redis BLPOP, expected at least 2 items, got %d", len(result))
-				continue
+			for _, jobData := range batchBuffer {
+				var job ExecutionJob
+				if err := json.Unmarshal([]byte(jobData), &job); err != nil {
+					s.logError("Failed to unmarshal job: %v", err)
+					continue
+				}
+
+				jobsProcessed++
+				s.logDebug("[JobID: %s] Processing job from Redis queue", job.ID)
+
+				select {
+				case s.jobQueue <- &job:
+					s.logDebug("[JobID: %s] Job queued to worker pool", job.ID)
+				default:
+
+					s.logDebug("[JobID: %s] Internal queue full, pushing back to Redis", job.ID)
+					go func(data string) {
+						if err := s.redisClient.RPush(context.Background(), "execution_queue", data).Err(); err != nil {
+							s.logError("Failed to push job back to Redis: %v", err)
+						}
+					}(jobData)
+				}
 			}
 
-			s.logger.Printf("Job popped from Redis queue, data size: %d bytes", len(result[1]))
-			jobsProcessed++
-
-			var job ExecutionJob
-			if err := json.Unmarshal([]byte(result[1]), &job); err != nil {
-				s.logger.Printf("ERROR: Failed to unmarshal job data: %v", err)
-				s.logger.Printf("Job data: %s", result[1])
-				continue
+			if len(batchBuffer) == 0 {
+				time.Sleep(10 * time.Millisecond)
 			}
 
-			s.logger.Printf("[JobID: %s] Job unmarshaled successfully from Redis queue", job.ID)
-			s.logger.Printf("[JobID: %s] Attempting to send job to internal worker pool queue", job.ID)
-
-			select {
-			case s.jobQueue <- &job:
-				s.logger.Printf("[JobID: %s] Job successfully queued to worker pool", job.ID)
-			default:
-				s.logger.Printf("[JobID: %s] WARNING: Internal worker pool queue is full, pushing job back to Redis", job.ID)
-				go func() {
-					time.Sleep(10 * time.Millisecond)
-					pushErr := s.redisClient.LPush(context.Background(), "execution_queue", result[1]).Err()
-					if pushErr != nil {
-						s.logger.Printf("[JobID: %s] ERROR: Failed to push job back to Redis queue: %v", job.ID, pushErr)
-					} else {
-						s.logger.Printf("[JobID: %s] Job pushed back to Redis queue successfully", job.ID)
-					}
-				}()
-			}
-
-			if jobsProcessed%100 == 0 {
-				s.logger.Printf("Redis queue processor stats: processed %d jobs in %v",
+			if jobsProcessed > 0 && jobsProcessed%1000 == 0 {
+				s.logInfo("Redis queue processor stats: processed %d jobs in %v",
 					jobsProcessed, time.Since(startTime))
 			}
 		}
@@ -1014,38 +1147,21 @@ func (s *service) storeJobResult(ctx context.Context, result *JobResult) {
 }
 
 func (s *service) reportMetrics() {
-	s.logger.Printf("Metrics reporter started, reporting interval: 10 seconds")
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-
-	startTime := time.Now()
-	reportCount := 0
 
 	for {
 		select {
 		case <-ticker.C:
-			reportCount++
 			active := atomic.LoadInt64(&s.activeExecutions)
 			queued := len(s.jobQueue)
 
-			queueLen, err := s.redisClient.LLen(context.Background(), "execution_queue").Result()
-			if err != nil {
-				s.logger.Printf("ERROR: Failed to get Redis queue length: %v", err)
-				queueLen = -1
-			}
+			queueLen, _ := s.redisClient.LLen(context.Background(), "execution_queue").Result()
 
-			s.logger.Printf("METRICS [%d]: Active executions: %d, Internal queue: %d jobs, Redis queue: %d jobs, Uptime: %v",
-				reportCount, active, queued, queueLen, time.Since(startTime))
-
-			if s.config.WorkerCount > 0 {
-				utilization := float64(active) / float64(s.config.WorkerCount) * 100
-				s.logger.Printf("METRICS [%d]: Worker pool utilization: %.2f%% (%d/%d workers active)",
-					reportCount, utilization, active, s.config.WorkerCount)
-			}
+			s.logInfo("METRICS: Active: %d, Internal queue: %d, Redis queue: %d",
+				active, queued, queueLen)
 
 		case <-s.shutdownCh:
-			s.logger.Printf("Metrics reporter shutting down after %d reports (active for %v)",
-				reportCount, time.Since(startTime))
 			return
 		}
 	}
@@ -1061,6 +1177,70 @@ func (s *service) Shutdown() {
 	s.logger.Println("Waiting for all workers to complete their current jobs")
 	waitStart := time.Now()
 	s.workerWg.Wait()
+
+	var trackedContainers []string
+	if s.containerPool != nil {
+		s.logger.Println("Cleaning up tracked containers in pool...")
+
+		s.containerPool.mu.Lock()
+		for _, container := range s.containerPool.containers {
+			trackedContainers = append(trackedContainers, container.ID)
+		}
+		s.containerPool.mu.Unlock()
+
+		s.logger.Printf("Found %d tracked containers to clean up", len(trackedContainers))
+	}
+
+	s.logger.Println("Finding all executor-pool containers...")
+	findCmd := exec.Command("docker", "ps", "-q", "--filter", "name=executor-pool")
+	output, err := findCmd.Output()
+
+	allContainers := []string{}
+	if err != nil {
+		s.logger.Printf("Error finding executor-pool containers: %v", err)
+	} else {
+		containerIDs := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, id := range containerIDs {
+			if id != "" {
+				allContainers = append(allContainers, id)
+			}
+		}
+		s.logger.Printf("Found %d executor-pool containers running", len(allContainers))
+	}
+
+	containersToRemove := make(map[string]bool)
+	for _, id := range trackedContainers {
+		containersToRemove[id] = true
+	}
+	for _, id := range allContainers {
+		containersToRemove[id] = true
+	}
+
+	containersList := []string{}
+	for id := range containersToRemove {
+		containersList = append(containersList, id)
+	}
+
+	s.logger.Printf("Total of %d unique containers to remove", len(containersList))
+	cleanupStart := time.Now()
+
+	var wg sync.WaitGroup
+	for _, containerID := range containersList {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			s.logger.Printf("Removing container %s", id[:12])
+			cmd := exec.Command("docker", "rm", "-f", id)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				s.logger.Printf("Error removing container %s: %v, output: %s", id[:12], err, output)
+			} else {
+				s.logger.Printf("Container %s removed successfully", id[:12])
+			}
+		}(containerID)
+	}
+
+	wg.Wait()
+	s.logger.Printf("Container cleanup complete (took %v)", time.Since(cleanupStart))
 
 	s.logger.Printf("All workers stopped gracefully (took %v)", time.Since(waitStart))
 	s.logger.Printf("Executor service shutdown complete (took %v)", time.Since(shutdownStart))

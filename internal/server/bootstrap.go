@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
 	"go-code-runner/internal/repository"
 	"go-code-runner/internal/service/coding_test"
 	"go-code-runner/internal/service/problems"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"go-code-runner/internal/code_executor"
@@ -47,12 +51,13 @@ func Run() {
 		Addr:         cfg.RedisAddr,
 		Password:     cfg.RedisPassword,
 		DB:           0,
-		PoolSize:     300,
-		MinIdleConns: 50,
+		PoolSize:     1000,
+		MinIdleConns: 200,
 		MaxRetries:   3,
 		DialTimeout:  5 * time.Second,
-		ReadTimeout:  1 * time.Second,
-		WriteTimeout: 1 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolTimeout:  4 * time.Second,
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -84,9 +89,45 @@ func Run() {
 
 	r := NewRouter(dbpool, problemService, executorService, companyHandler, codingTestHandler)
 
+	logger.Printf("Initializing HTTP worker pool with %d workers and queue size %d",
+		cfg.HTTPWorkerCount, cfg.HTTPMaxQueueSize)
+	workerPool := NewWorkerPool(cfg.HTTPWorkerCount, cfg.HTTPMaxQueueSize, logger)
+	workerPool.Start()
+
+	wrappedHandler := WorkerPoolHandler(r, workerPool)
+
 	addr := ":" + cfg.ServerPort
 	logger.Printf("starting HTTP server on %s", addr)
-	if err := r.Run(addr); err != nil {
-		logger.Fatalf("server error: %v", err)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: wrappedHandler,
 	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(http.ErrServerClosed, err) {
+			logger.Fatalf("server error: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	logger.Println("Shutdown signal received, initiating graceful shutdown...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	logger.Println("Shutting down executor service...")
+	executorService.Shutdown()
+
+	logger.Println("Shutting down HTTP server...")
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	logger.Println("Shutting down HTTP worker pool...")
+	workerPool.Shutdown(ctx)
+
+	logger.Println("Server exiting")
 }
