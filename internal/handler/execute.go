@@ -13,7 +13,6 @@ type ExecuteRequest struct {
 	Language  string `json:"language" binding:"required"`
 	Code      string `json:"code" binding:"required"`
 	ProblemID int    `json:"problem_id,omitempty"`
-	Async     bool   `json:"async,omitempty"`
 }
 
 type ExecuteResponse struct {
