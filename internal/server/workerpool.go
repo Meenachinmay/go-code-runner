@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// HTTPRequest represents a request to be processed by the worker pool
 type HTTPRequest struct {
 	W         http.ResponseWriter
 	R         *http.Request
@@ -17,7 +16,6 @@ type HTTPRequest struct {
 	StartTime time.Time
 }
 
-// WorkerPool manages a pool of workers for processing HTTP requests
 type WorkerPool struct {
 	workerCount  int
 	jobQueue     chan *HTTPRequest
@@ -27,7 +25,6 @@ type WorkerPool struct {
 	maxQueueSize int
 }
 
-// NewWorkerPool creates a new worker pool with the specified number of workers
 func NewWorkerPool(workerCount, maxQueueSize int, logger *log.Logger) *WorkerPool {
 	return &WorkerPool{
 		workerCount:  workerCount,
@@ -38,7 +35,6 @@ func NewWorkerPool(workerCount, maxQueueSize int, logger *log.Logger) *WorkerPoo
 	}
 }
 
-// Start starts the worker pool
 func (wp *WorkerPool) Start() {
 	wp.logger.Printf("Starting HTTP worker pool with %d workers", wp.workerCount)
 
@@ -50,7 +46,6 @@ func (wp *WorkerPool) Start() {
 	wp.logger.Printf("HTTP worker pool started successfully")
 }
 
-// worker processes jobs from the job queue
 func (wp *WorkerPool) worker(id int) {
 	defer wp.workerWg.Done()
 
@@ -77,7 +72,6 @@ func (wp *WorkerPool) worker(id int) {
 	}
 }
 
-// Submit submits a request to the worker pool
 func (wp *WorkerPool) Submit(w http.ResponseWriter, r *http.Request, handler http.Handler) (bool, chan struct{}) {
 	done := make(chan struct{})
 	job := &HTTPRequest{
@@ -100,7 +94,6 @@ func (wp *WorkerPool) Submit(w http.ResponseWriter, r *http.Request, handler htt
 	}
 }
 
-// Shutdown gracefully shuts down the worker pool
 func (wp *WorkerPool) Shutdown(ctx context.Context) {
 	wp.logger.Println("Shutting down HTTP worker pool...")
 	close(wp.shutdownCh)
@@ -119,14 +112,12 @@ func (wp *WorkerPool) Shutdown(ctx context.Context) {
 	}
 }
 
-// ResponseBuffer is a custom ResponseWriter that buffers the response
 type ResponseBuffer struct {
 	http.ResponseWriter
 	statusCode int
 	buffer     []byte
 }
 
-// NewResponseBuffer creates a new ResponseBuffer
 func NewResponseBuffer(w http.ResponseWriter) *ResponseBuffer {
 	return &ResponseBuffer{
 		ResponseWriter: w,
@@ -134,24 +125,20 @@ func NewResponseBuffer(w http.ResponseWriter) *ResponseBuffer {
 	}
 }
 
-// WriteHeader captures the status code
 func (rb *ResponseBuffer) WriteHeader(statusCode int) {
 	rb.statusCode = statusCode
 }
 
-// Write captures the response body
 func (rb *ResponseBuffer) Write(b []byte) (int, error) {
 	rb.buffer = append(rb.buffer, b...)
 	return len(b), nil
 }
 
-// Flush writes the buffered response to the original ResponseWriter
 func (rb *ResponseBuffer) Flush() {
 	rb.ResponseWriter.WriteHeader(rb.statusCode)
 	rb.ResponseWriter.Write(rb.buffer)
 }
 
-// WorkerPoolHandler wraps an http.Handler with a worker pool
 func WorkerPoolHandler(handler http.Handler, pool *WorkerPool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 

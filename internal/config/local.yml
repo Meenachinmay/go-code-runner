@@ -8,4 +8,4 @@ postgres:
   db: "code_runner_db"
   sslmode: "disable"
 
-execution_timeout_seconds: 15
+execution_timeout_seconds: 30
