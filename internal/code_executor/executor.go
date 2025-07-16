@@ -200,7 +200,6 @@ func (p *ContainerPool) RecordFailure() {
 	p.failureCount++
 	p.lastFailure = time.Now()
 
-	// If we have 5 or more failures in a short period, open the circuit
 	if p.failureCount >= 5 {
 		p.circuitOpen = true
 		p.logger.Printf("Circuit breaker opened due to %d consecutive failures", p.failureCount)
@@ -212,7 +211,6 @@ func (p *ContainerPool) RecordSuccess() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Only reset if we had failures
 	if p.failureCount > 0 {
 		p.failureCount = 0
 		p.circuitOpen = false
@@ -225,7 +223,6 @@ func (p *ContainerPool) IsCircuitOpen() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// If circuit is open but cooldown period (30 seconds) has passed, try to reset
 	if p.circuitOpen && time.Since(p.lastFailure) > 30*time.Second {
 		p.circuitOpen = false
 		p.failureCount = 0
@@ -289,7 +286,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	runID := uuid.New().String()
 	s.logDebug("[%s] Starting code execution...", runID)
 
-	// Check if container pool is available and not in circuit breaker open state
 	if s.containerPool != nil && len(s.containerPool.containers) > 10 && !s.containerPool.IsCircuitOpen() {
 		s.logDebug("[%s] Container pool is available and circuit is closed", runID)
 
@@ -300,7 +296,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 
 				if !s.isContainerHealthy(containerID) {
 					s.logDebug("[%s] Container %s is unhealthy, skipping", runID, containerID[:12])
-					// Container is unhealthy, record failure
+
 					s.containerPool.RecordFailure()
 					s.returnContainer(containerID)
 					continue
@@ -308,16 +304,14 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 
 				result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
 
-				// Return container to pool regardless of execution result
 				s.returnContainer(containerID)
 
 				if err == nil {
-					// Execution succeeded, record success
+
 					s.containerPool.RecordSuccess()
 					return result, nil
 				}
 
-				// Execution failed, record failure
 				s.containerPool.RecordFailure()
 				s.logDebug("[%s] Execution failed in pooled container: %v", runID, err)
 				continue
@@ -330,7 +324,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		s.logInfo("[%s] Circuit breaker is open, bypassing container pool", runID)
 	}
 
-	// Create on-demand container as fallback
 	containerID, err := s.createOnDemandContainer()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create on-demand container: %w", err)
@@ -340,7 +333,6 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 
 	result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
 
-	// Clean up on-demand container
 	go func() {
 		exec.Command("docker", "rm", "-f", containerID).Run()
 	}()
@@ -482,7 +474,7 @@ func (s *service) prewarmContainer(containerID string) {
 }
 
 func (s *service) getContainer(ctx context.Context) (string, error) {
-	// Check if circuit breaker is open
+
 	if s.containerPool.IsCircuitOpen() {
 		s.logDebug("Circuit breaker is open, bypassing container pool")
 		return s.createOnDemandContainer()
@@ -498,7 +490,6 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 		if !isRunning {
 			s.logDebug("Container %s is not running, creating replacement", containerID[:12])
 
-			// Record failure in circuit breaker
 			s.containerPool.RecordFailure()
 
 			go func() {
@@ -507,7 +498,7 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 
 			newID, err := s.createWarmContainer(len(s.containerPool.containers))
 			if err != nil {
-				// Record another failure if we couldn't create a replacement
+
 				s.containerPool.RecordFailure()
 				return "", fmt.Errorf("failed to create replacement container: %w", err)
 			}
@@ -515,7 +506,6 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 			return newID, nil
 		}
 
-		// Record success in circuit breaker
 		s.containerPool.RecordSuccess()
 		return containerID, nil
 
@@ -537,14 +527,13 @@ func (s *service) createOnDemandContainer() (string, error) {
 	return containerID, nil
 }
 
-func (s *service) returnContainer(containerID string) { // --> can be used a cleanup worker here
+func (s *service) returnContainer(containerID string) {
 	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
 	output, err := checkCmd.Output()
 
 	if err != nil || strings.TrimSpace(string(output)) != "true" {
 		s.logDebug("Not returning dead container %s to pool", containerID[:12])
 
-		// Record failure in circuit breaker
 		s.containerPool.RecordFailure()
 
 		go func() {
@@ -555,7 +544,7 @@ func (s *service) returnContainer(containerID string) { // --> can be used a cle
 
 	select {
 	case s.containerPool.available <- containerID:
-		// Successfully returned to pool
+
 		s.containerPool.RecordSuccess()
 
 	default:
@@ -640,10 +629,8 @@ func (s *service) maintainContainerPool() {
 		case <-s.shutdownCh:
 			return
 		case <-ticker.C:
-			// Check circuit breaker status
 			if s.containerPool.IsCircuitOpen() {
 				s.logInfo("Circuit breaker is open, monitoring for auto-reset")
-				// IsCircuitOpen already handles auto-reset after cooldown
 				continue
 			}
 
@@ -653,16 +640,14 @@ func (s *service) maintainContainerPool() {
 
 			availableCount := len(s.containerPool.available)
 
-			// Log container pool health metrics
-			s.logDebug("Container pool health: %d/%d available (%.1f%%)", 
-				availableCount, totalContainers, 
+			s.logDebug("Container pool health: %d/%d available (%.1f%%)",
+				availableCount, totalContainers,
 				float64(availableCount)/float64(totalContainers)*100)
 
 			if availableCount < totalContainers/4 {
 				s.logDebug("Container pool low (%d/%d), creating more containers",
 					availableCount, totalContainers)
 
-				// Check container health and create new ones if needed
 				healthyCount := 0
 				for i := 0; i < 5; i++ {
 					go func() {
