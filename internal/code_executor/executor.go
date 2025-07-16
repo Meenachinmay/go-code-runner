@@ -73,11 +73,14 @@ type Container struct {
 }
 
 type ContainerPool struct {
-	mu         sync.Mutex
-	containers []*Container
-	available  chan string
-	maxSize    int
-	logger     *log.Logger
+	mu           sync.Mutex
+	containers   []*Container
+	available    chan string
+	maxSize      int
+	logger       *log.Logger
+	failureCount int
+	lastFailure  time.Time
+	circuitOpen  bool
 }
 
 type service struct {
@@ -178,12 +181,53 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 
 func NewContainerPool(size int, logger *log.Logger) *ContainerPool {
 	pool := &ContainerPool{
-		containers: make([]*Container, 0, size),
-		available:  make(chan string, size),
-		maxSize:    size,
-		logger:     logger,
+		containers:   make([]*Container, 0, size),
+		available:    make(chan string, size),
+		maxSize:      size,
+		logger:       logger,
+		failureCount: 0,
+		lastFailure:  time.Time{},
+		circuitOpen:  false,
 	}
 	return pool
+}
+
+func (p *ContainerPool) RecordFailure() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.failureCount++
+	p.lastFailure = time.Now()
+
+	if p.failureCount >= 5 {
+		p.circuitOpen = true
+		p.logger.Printf("Circuit breaker opened due to %d consecutive failures", p.failureCount)
+	}
+}
+
+func (p *ContainerPool) RecordSuccess() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.failureCount > 0 {
+		p.failureCount = 0
+		p.circuitOpen = false
+		p.logger.Printf("Circuit breaker reset after successful operation")
+	}
+}
+
+func (p *ContainerPool) IsCircuitOpen() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.circuitOpen && time.Since(p.lastFailure) > 30*time.Second {
+		p.circuitOpen = false
+		p.failureCount = 0
+		p.logger.Printf("Circuit breaker auto-reset after cooldown period")
+		return false
+	}
+
+	return p.circuitOpen
 }
 
 func (s *service) ensureDockerImageAvailable(imageName string) {
@@ -211,6 +255,27 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 	s.imageCache[imageName] = true
 }
 
+func (s *service) isContainerHealthy(containerID string) bool {
+	s.logDebug("Checking health of container %s", containerID[:12])
+
+	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
+	output, err := checkCmd.Output()
+
+	if err != nil || strings.TrimSpace(string(output)) != "true" {
+		s.logDebug("Container %s is not running", containerID[:12])
+		return false
+	}
+
+	pingCmd := exec.Command("docker", "exec", containerID, "echo", "ping")
+	if err := pingCmd.Run(); err != nil {
+		s.logDebug("Container %s is not responsive: %v", containerID[:12], err)
+		return false
+	}
+
+	s.logDebug("Container %s is healthy", containerID[:12])
+	return true
+}
+
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
 	atomic.AddInt64(&s.activeExecutions, 1)
 	defer atomic.AddInt64(&s.activeExecutions, -1)
@@ -218,20 +283,33 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	runID := uuid.New().String()
 	s.logDebug("[%s] Starting code execution...", runID)
 
-	if s.containerPool != nil && len(s.containerPool.containers) > 10 {
+	if s.containerPool != nil && len(s.containerPool.containers) > 10 && !s.containerPool.IsCircuitOpen() {
+		s.logDebug("[%s] Container pool is available and circuit is closed", runID)
+
 		for attempts := 0; attempts < 2; attempts++ {
 			containerID, err := s.getContainer(ctx)
 			if err == nil {
 				s.logDebug("[%s] Using pooled container: %s (attempt %d)", runID, containerID[:12], attempts+1)
+
+				if !s.isContainerHealthy(containerID) {
+					s.logDebug("[%s] Container %s is unhealthy, skipping", runID, containerID[:12])
+
+					s.containerPool.RecordFailure()
+					s.returnContainer(containerID)
+					continue
+				}
 
 				result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
 
 				s.returnContainer(containerID)
 
 				if err == nil {
+
+					s.containerPool.RecordSuccess()
 					return result, nil
 				}
 
+				s.containerPool.RecordFailure()
 				s.logDebug("[%s] Execution failed in pooled container: %v", runID, err)
 				continue
 			}
@@ -239,9 +317,28 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 		}
 
 		s.logInfo("[%s] Falling back to traditional execution after pool failures", runID)
+	} else if s.containerPool != nil && s.containerPool.IsCircuitOpen() {
+		s.logInfo("[%s] Circuit breaker is open, bypassing container pool", runID)
 	}
 
-	return nil, fmt.Errorf("failed to get container")
+	containerID, err := s.createOnDemandContainer()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create on-demand container: %w", err)
+	}
+
+	s.logDebug("[%s] Using on-demand container: %s", runID, containerID[:12])
+
+	result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
+
+	go func() {
+		exec.Command("docker", "rm", "-f", containerID).Run()
+	}()
+
+	if err != nil {
+		return nil, fmt.Errorf("execution failed in on-demand container: %w", err)
+	}
+
+	return result, nil
 }
 
 func (s *service) executeInPooledContainer(ctx context.Context, containerID string, code string, language string, input string, runID string) (*ExecutionResult, error) {
@@ -374,9 +471,14 @@ func (s *service) prewarmContainer(containerID string) {
 }
 
 func (s *service) getContainer(ctx context.Context) (string, error) {
+
+	if s.containerPool.IsCircuitOpen() {
+		s.logDebug("Circuit breaker is open, bypassing container pool")
+		return s.createOnDemandContainer()
+	}
+
 	select {
 	case containerID := <-s.containerPool.available:
-
 		checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
 		output, err := checkCmd.Output()
 
@@ -385,25 +487,29 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 		if !isRunning {
 			s.logDebug("Container %s is not running, creating replacement", containerID[:12])
 
+			s.containerPool.RecordFailure()
+
 			go func() {
 				exec.Command("docker", "rm", "-f", containerID).Run()
 			}()
 
 			newID, err := s.createWarmContainer(len(s.containerPool.containers))
 			if err != nil {
+
+				s.containerPool.RecordFailure()
 				return "", fmt.Errorf("failed to create replacement container: %w", err)
 			}
 
 			return newID, nil
 		}
 
+		s.containerPool.RecordSuccess()
 		return containerID, nil
 
 	case <-ctx.Done():
 		return "", ctx.Err()
 
 	default:
-
 		s.logDebug("No containers available in pool, creating on-demand container")
 		return s.createOnDemandContainer()
 	}
@@ -419,13 +525,14 @@ func (s *service) createOnDemandContainer() (string, error) {
 }
 
 func (s *service) returnContainer(containerID string) {
-
 	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
 	output, err := checkCmd.Output()
 
 	if err != nil || strings.TrimSpace(string(output)) != "true" {
-
 		s.logDebug("Not returning dead container %s to pool", containerID[:12])
+
+		s.containerPool.RecordFailure()
+
 		go func() {
 			exec.Command("docker", "rm", "-f", containerID).Run()
 		}()
@@ -435,8 +542,9 @@ func (s *service) returnContainer(containerID string) {
 	select {
 	case s.containerPool.available <- containerID:
 
-	default:
+		s.containerPool.RecordSuccess()
 
+	default:
 		s.logDebug("Container pool full, removing container %s", containerID[:12])
 		go func() {
 			exec.Command("docker", "rm", "-f", containerID).Run()
@@ -518,33 +626,53 @@ func (s *service) maintainContainerPool() {
 		case <-s.shutdownCh:
 			return
 		case <-ticker.C:
+			if s.containerPool.IsCircuitOpen() {
+				s.logInfo("Circuit breaker is open, monitoring for auto-reset")
+				continue
+			}
+
 			s.containerPool.mu.Lock()
 			totalContainers := len(s.containerPool.containers)
 			s.containerPool.mu.Unlock()
 
 			availableCount := len(s.containerPool.available)
 
+			s.logDebug("Container pool health: %d/%d available (%.1f%%)",
+				availableCount, totalContainers,
+				float64(availableCount)/float64(totalContainers)*100)
+
 			if availableCount < totalContainers/4 {
 				s.logDebug("Container pool low (%d/%d), creating more containers",
 					availableCount, totalContainers)
 
+				healthyCount := 0
 				for i := 0; i < 5; i++ {
 					go func() {
 						if containerID, err := s.createWarmContainer(int(time.Now().Unix())); err == nil {
-							s.containerPool.mu.Lock()
-							s.containerPool.containers = append(s.containerPool.containers, &Container{
-								ID:        containerID,
-								Available: true,
-								LastUsed:  time.Now(),
-							})
-							s.containerPool.mu.Unlock()
+							if s.isContainerHealthy(containerID) {
+								healthyCount++
+								s.containerPool.mu.Lock()
+								s.containerPool.containers = append(s.containerPool.containers, &Container{
+									ID:        containerID,
+									Available: true,
+									LastUsed:  time.Now(),
+								})
+								s.containerPool.mu.Unlock()
 
-							select {
-							case s.containerPool.available <- containerID:
-								s.logDebug("Added new container to pool")
-							default:
+								select {
+								case s.containerPool.available <- containerID:
+									s.logDebug("Added new container to pool")
+								default:
+									exec.Command("docker", "rm", "-f", containerID).Run()
+								}
+							} else {
+								s.logDebug("Newly created container is unhealthy, removing")
+								s.containerPool.RecordFailure()
 								exec.Command("docker", "rm", "-f", containerID).Run()
 							}
+						} else {
+							s.logDebug("Failed to create new container: %v", err)
+							s.containerPool.RecordFailure()
 						}
 					}()
 				}
