@@ -276,6 +276,221 @@ func (s *service) isContainerHealthy(containerID string) bool {
 	return true
 }
 
+func (s *service) createTestHarness(code string, testCases []*models.TestCase) (string, string) {
+	var inputData strings.Builder
+	inputData.WriteString(fmt.Sprintf("%d\n", len(testCases)))
+
+	for _, tc := range testCases {
+		inputData.WriteString(tc.Input)
+		if !strings.HasSuffix(tc.Input, "\n") {
+			inputData.WriteString("\n")
+		}
+		inputData.WriteString("---END_TEST_CASE---\n")
+	}
+
+	harness := fmt.Sprintf(`
+package main
+
+import (
+    "bufio"
+    "bytes"
+    "fmt"
+    "io"
+    "os"
+    "strings"
+)
+
+func SavedMain() {
+    %s
+}
+
+func main() {
+    reader := bufio.NewReader(os.Stdin)
+    
+    line, _ := reader.ReadString('\n')
+    var numTests int
+    fmt.Sscanf(strings.TrimSpace(line), "%%d", &numTests)
+    
+    for i := 0; i < numTests; i++ {
+        var inputLines []string
+        for {
+            line, err := reader.ReadString('\n')
+            if err != nil || strings.TrimSpace(line) == "---END_TEST_CASE---" {
+                break
+            }
+            inputLines = append(inputLines, line)
+        }
+        
+        input := strings.Join(inputLines, "")
+        
+        oldStdin := os.Stdin
+        r, w, _ := os.Pipe()
+        os.Stdin = r
+        
+        // Write the input
+        go func() {
+            w.Write([]byte(input))
+            w.Close()
+        }()
+        
+        oldStdout := os.Stdout
+        rOut, wOut, _ := os.Pipe()
+        os.Stdout = wOut
+        
+        done := make(chan bool)
+        var output string
+        
+        go func() {
+            buf := new(bytes.Buffer)
+            io.Copy(buf, rOut)
+            output = buf.String()
+            done <- true
+        }()
+        
+        SavedMain()
+        
+        wOut.Close()
+        os.Stdout = oldStdout
+        os.Stdin = oldStdin
+        
+        <-done
+        
+        fmt.Printf("---OUTPUT_START---\n%%s---OUTPUT_END---\n", output)
+    }
+}
+`, s.extractMainBody(code))
+
+	return harness, inputData.String()
+}
+
+func (s *service) extractMainBody(code string) string {
+
+	lines := strings.Split(code, "\n")
+	inMain := false
+	braceCount := 0
+	var mainBody []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.Contains(trimmed, "func main()") {
+			inMain = true
+			if strings.Contains(trimmed, "{") {
+				braceCount++
+			}
+			continue
+		}
+
+		if inMain {
+			if strings.Contains(line, "{") {
+				braceCount += strings.Count(line, "{")
+			}
+			if strings.Contains(line, "}") {
+				braceCount -= strings.Count(line, "}")
+				if braceCount == 0 {
+					break
+				}
+			}
+			mainBody = append(mainBody, line)
+		}
+	}
+
+	return strings.Join(mainBody, "\n")
+}
+
+func (s *service) executeBatchTestCases(ctx context.Context, containerID string, code string, language string, testCases []*models.TestCase, runID string) ([]*ExecutionResult, error) {
+	s.logDebug("[%s] Executing batch test cases in container %s", runID, containerID[:12])
+
+	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
+	defer cancel()
+
+	execDir := fmt.Sprintf("/tmp/exec_%s", runID)
+
+	mkdirCmd := exec.CommandContext(execCtx, "docker", "exec", containerID, "mkdir", "-p", execDir)
+	if err := mkdirCmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to create exec dir: %w", err)
+	}
+
+	harnessCode, inputData := s.createTestHarness(code, testCases)
+
+	codeFile := fmt.Sprintf("%s/main.go", execDir)
+	writeCodeCmd := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "tee", codeFile)
+	writeCodeCmd.Stdin = strings.NewReader(harnessCode)
+	if err := writeCodeCmd.Run(); err != nil {
+		exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+		return nil, fmt.Errorf("failed to write code: %w", err)
+	}
+
+	compileCmd := fmt.Sprintf(`cd %s && export GOCACHE=/root/.cache/go-build GOMODCACHE=/go/pkg/mod && go build -o program main.go`, execDir)
+	dockerCompile := exec.CommandContext(execCtx, "docker", "exec", containerID, "sh", "-c", compileCmd)
+
+	var compileStderr bytes.Buffer
+	dockerCompile.Stderr = &compileStderr
+
+	if err := dockerCompile.Run(); err != nil {
+		exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+		return nil, fmt.Errorf("compilation failed: %s", compileStderr.String())
+	}
+
+	runCmd := fmt.Sprintf(`cd %s && ./program`, execDir)
+	dockerRun := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "sh", "-c", runCmd)
+	dockerRun.Stdin = strings.NewReader(inputData)
+
+	var stdout, stderr bytes.Buffer
+	dockerRun.Stdout = &stdout
+	dockerRun.Stderr = &stderr
+
+	err := dockerRun.Run()
+
+	exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+
+	if err != nil {
+		return nil, fmt.Errorf("execution failed: %w, stderr: %s", err, stderr.String())
+	}
+
+	return s.parseTestResults(stdout.String(), stderr.String(), len(testCases))
+}
+
+func (s *service) parseTestResults(output string, stderr string, numTests int) ([]*ExecutionResult, error) {
+	results := make([]*ExecutionResult, numTests)
+
+	if stderr != "" {
+		for i := 0; i < numTests; i++ {
+			results[i] = &ExecutionResult{
+				Output: "",
+				Error:  stderr,
+			}
+		}
+		return results, nil
+	}
+
+	parts := strings.Split(output, "---OUTPUT_START---")
+
+	for i := 0; i < numTests; i++ {
+		if i+1 < len(parts) {
+			endIdx := strings.Index(parts[i+1], "---OUTPUT_END---")
+			if endIdx > 0 {
+				results[i] = &ExecutionResult{
+					Output: strings.TrimPrefix(parts[i+1][:endIdx], "\n"),
+					Error:  "",
+				}
+			} else {
+				results[i] = &ExecutionResult{
+					Output: "",
+					Error:  "Failed to parse output",
+				}
+			}
+		} else {
+			results[i] = &ExecutionResult{
+				Output: "",
+				Error:  "Missing output for test case",
+			}
+		}
+	}
+
+	return results, nil
+}
+
 func (s *service) executeCode(ctx context.Context, code string, language string, input string) (*ExecutionResult, error) {
 	atomic.AddInt64(&s.activeExecutions, 1)
 	defer atomic.AddInt64(&s.activeExecutions, -1)
@@ -682,18 +897,98 @@ func (s *service) maintainContainerPool() {
 }
 
 func (s *service) executeWithTestCasesInternal(ctx context.Context, code string, language string, testCases []*models.TestCase) (*models.ExecutionResults, error) {
-	var testResults []models.TestResult
-	success := true
 
-	for _, testCase := range testCases {
-		s.logger.Printf("Running test case %d", testCase.ID)
-
-		result, err := s.executeCode(ctx, code, language, testCase.Input)
+	if len(testCases) == 1 {
+		result, err := s.executeCode(ctx, code, language, testCases[0].Input)
 		if err != nil {
 			return nil, err
 		}
 
 		actualOutput := strings.TrimSpace(result.Output)
+		expectedOutput := strings.TrimSpace(testCases[0].ExpectedOutput)
+		passed := actualOutput == expectedOutput
+
+		testResult := models.TestResult{
+			TestCaseID:     testCases[0].ID,
+			Input:          testCases[0].Input,
+			ExpectedOutput: testCases[0].ExpectedOutput,
+			ActualOutput:   actualOutput,
+			Error:          result.Error,
+			Passed:         passed,
+		}
+
+		if testCases[0].IsHidden {
+			testResult.Input = ""
+			testResult.ExpectedOutput = ""
+		}
+
+		return &models.ExecutionResults{
+			Success:     passed,
+			TestResults: []models.TestResult{testResult},
+		}, nil
+	}
+
+	atomic.AddInt64(&s.activeExecutions, 1)
+	defer atomic.AddInt64(&s.activeExecutions, -1)
+
+	runID := uuid.New().String()
+	s.logDebug("[%s] Starting batch test case execution for %d test cases", runID, len(testCases))
+
+	var containerID string
+	var err error
+	var isPooled bool
+
+	if s.containerPool != nil && len(s.containerPool.containers) > 10 && !s.containerPool.IsCircuitOpen() {
+		containerID, err = s.getContainer(ctx)
+		if err == nil {
+			isPooled = true
+			s.logDebug("[%s] Using pooled container for batch execution: %s", runID, containerID[:12])
+		}
+	}
+
+	if containerID == "" {
+		containerID, err = s.createOnDemandContainer()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create container: %w", err)
+		}
+		isPooled = false
+		s.logDebug("[%s] Using on-demand container for batch execution: %s", runID, containerID[:12])
+	}
+
+	results, err := s.executeBatchTestCases(ctx, containerID, code, language, testCases, runID)
+
+	if isPooled {
+		s.returnContainer(containerID)
+	} else {
+		go func() {
+			exec.Command("docker", "rm", "-f", containerID).Run()
+		}()
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("batch execution failed: %w", err)
+	}
+
+	// Process results
+	var testResults []models.TestResult
+	success := true
+
+	for i, testCase := range testCases {
+		if i >= len(results) {
+
+			testResults = append(testResults, models.TestResult{
+				TestCaseID:     testCase.ID,
+				Input:          testCase.Input,
+				ExpectedOutput: testCase.ExpectedOutput,
+				ActualOutput:   "",
+				Error:          "No output received",
+				Passed:         false,
+			})
+			success = false
+			continue
+		}
+
+		actualOutput := strings.TrimSpace(results[i].Output)
 		expectedOutput := strings.TrimSpace(testCase.ExpectedOutput)
 
 		passed := actualOutput == expectedOutput
@@ -706,7 +1001,7 @@ func (s *service) executeWithTestCasesInternal(ctx context.Context, code string,
 			Input:          testCase.Input,
 			ExpectedOutput: testCase.ExpectedOutput,
 			ActualOutput:   actualOutput,
-			Error:          result.Error,
+			Error:          results[i].Error,
 			Passed:         passed,
 		}
 
@@ -717,6 +1012,8 @@ func (s *service) executeWithTestCasesInternal(ctx context.Context, code string,
 
 		testResults = append(testResults, testResult)
 	}
+
+	s.logDebug("[%s] Batch execution completed: %d/%d test cases passed", runID, len(testResults), len(testCases))
 
 	return &models.ExecutionResults{
 		Success:     success,
