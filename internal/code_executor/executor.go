@@ -192,7 +192,6 @@ func NewContainerPool(size int, logger *log.Logger) *ContainerPool {
 	return pool
 }
 
-// RecordFailure increments the failure count and opens the circuit if threshold is reached
 func (p *ContainerPool) RecordFailure() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -206,7 +205,6 @@ func (p *ContainerPool) RecordFailure() {
 	}
 }
 
-// RecordSuccess resets the failure count and closes the circuit
 func (p *ContainerPool) RecordSuccess() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -218,7 +216,6 @@ func (p *ContainerPool) RecordSuccess() {
 	}
 }
 
-// IsCircuitOpen checks if the circuit is open, with auto-reset after cooldown
 func (p *ContainerPool) IsCircuitOpen() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
