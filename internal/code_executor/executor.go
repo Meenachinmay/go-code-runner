@@ -164,19 +164,23 @@ func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseReposi
 
 	s.startWorkers()
 
-	numProcessors := 20
-	if cfg.WorkerCount > 100 {
-		numProcessors = cfg.WorkerCount / 5
-	}
-	logger.Printf("Starting %d Redis queue processor goroutines", numProcessors)
-	for i := 0; i < numProcessors; i++ {
-		go s.processRedisQueue()
-	}
+	s.spinRedisProcessor()
 
 	go s.reportMetrics()
 
 	logger.Printf("Code executor service initialized successfully")
 	return s
+}
+
+func (s *service) spinRedisProcessor() {
+	var numProcessors int
+	if s.config.WorkerCount > 100 {
+		numProcessors = s.config.WorkerCount / 5
+	}
+	s.logger.Printf("Starting %d Redis queue processor goroutines", numProcessors)
+	for i := 0; i < numProcessors; i++ {
+		go s.processRedisQueue()
+	}
 }
 
 func NewContainerPool(size int, logger *log.Logger) *ContainerPool {
@@ -199,7 +203,7 @@ func (p *ContainerPool) RecordFailure() {
 	p.failureCount++
 	p.lastFailure = time.Now()
 
-	if p.failureCount >= 5 {
+	if p.failureCount >= CircuitBreakerFailureThreshold {
 		p.circuitOpen = true
 		p.logger.Printf("Circuit breaker opened due to %d consecutive failures", p.failureCount)
 	}
@@ -220,7 +224,7 @@ func (p *ContainerPool) IsCircuitOpen() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.circuitOpen && time.Since(p.lastFailure) > 30*time.Second {
+	if p.circuitOpen && time.Since(p.lastFailure) > CircuitBreakerCooldownPeriod {
 		p.circuitOpen = false
 		p.failureCount = 0
 		p.logger.Printf("Circuit breaker auto-reset after cooldown period")
@@ -285,7 +289,7 @@ func (s *service) createTestHarness(code string, testCases []*models.TestCase) (
 		if !strings.HasSuffix(tc.Input, "\n") {
 			inputData.WriteString("\n")
 		}
-		inputData.WriteString("---END_TEST_CASE---\n")
+		inputData.WriteString(TestCaseDelimiter + "\n")
 	}
 
 	harness := fmt.Sprintf(`
@@ -404,7 +408,7 @@ func (s *service) executeBatchTestCases(ctx context.Context, containerID string,
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
 	defer cancel()
 
-	execDir := fmt.Sprintf("/tmp/exec_%s", runID)
+	execDir := fmt.Sprintf("%s%s", ExecutionDirPrefix, runID)
 
 	mkdirCmd := exec.CommandContext(execCtx, "docker", "exec", containerID, "mkdir", "-p", execDir)
 	if err := mkdirCmd.Run(); err != nil {
@@ -464,7 +468,7 @@ func (s *service) parseTestResults(output string, stderr string, numTests int) (
 		return results, nil
 	}
 
-	parts := strings.Split(output, "---OUTPUT_START---")
+	parts := strings.Split(output, OutputStartMarker)
 
 	for i := 0; i < numTests; i++ {
 		if i+1 < len(parts) {
@@ -562,7 +566,7 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 	execCtx, cancel := context.WithTimeout(ctx, s.config.ExecutionTimeout)
 	defer cancel()
 
-	execDir := fmt.Sprintf("/tmp/exec_%s", runID)
+	execDir := fmt.Sprintf("%s%s", ExecutionDirPrefix, runID)
 	mkdirCmd := exec.CommandContext(execCtx, "docker", "exec", containerID, "mkdir", "-p", execDir)
 	if err := mkdirCmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to create exec dir: %w", err)
@@ -629,8 +633,8 @@ func (s *service) createWarmContainer(index int) (string, error) {
 		"run", "-d",
 		"--name", containerName,
 		"--network", "none",
-		"--memory", "256m",
-		"--cpus", "0.5",
+ 	"--memory", ContainerMemoryLimit,
+ 	"--cpus", ContainerCPULimit,
 		"-v", fmt.Sprintf("%s:/root/.cache/go-build:rw", hostBuildCacheDir),
 		"-v", fmt.Sprintf("%s:/go/pkg/mod:rw", hostModCacheDir),
 		"golang:1.22-alpine",
@@ -645,7 +649,7 @@ func (s *service) createWarmContainer(index int) (string, error) {
 
 	containerID := strings.TrimSpace(string(output))
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(ContainerHealthCheckTimeout)
 
 	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
 	checkOutput, err := checkCmd.Output()
@@ -833,7 +837,7 @@ func (s *service) initializeContainerPool(size int) error {
 }
 
 func (s *service) maintainContainerPool() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(ContainerPoolCheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -1116,7 +1120,7 @@ func (s *service) SubmitJob(ctx context.Context, job *ExecutionJob) (string, err
 	s.logger.Printf("[JobID: %s] Job serialized successfully, size=%d bytes", job.ID, len(jobData))
 
 	s.logger.Printf("[JobID: %s] Pushing job to Redis execution_queue", job.ID)
-	if err := s.redisClient.RPush(ctx, "execution_queue", jobData).Err(); err != nil {
+	if err := s.redisClient.RPush(ctx, RedisExecutionQueue, jobData).Err(); err != nil {
 		s.logger.Printf("[JobID: %s] ERROR: Failed to push job to Redis queue: %v", job.ID, err)
 		return "", fmt.Errorf("failed to queue job: %w", err)
 	}
@@ -1133,13 +1137,13 @@ func (s *service) GetJobResult(ctx context.Context, jobID string) (*JobResult, e
 	startTime := time.Now()
 	s.logger.Printf("[JobID: %s] Retrieving job result from Redis", jobID)
 
-	resultKey := fmt.Sprintf("job_result:%s", jobID)
+	resultKey := fmt.Sprintf(RedisJobResultPrefix+"%s", jobID)
 	s.logger.Printf("[JobID: %s] Checking Redis key: %s", jobID, resultKey)
 	data, err := s.redisClient.Get(ctx, resultKey).Result()
 
 	if err == redis.Nil {
 
-		statusKey := fmt.Sprintf("job_status:%s", jobID)
+		statusKey := fmt.Sprintf(RedisJobStatusPrefix+"%s", jobID)
 		s.logger.Printf("[JobID: %s] Job result not found, checking status key: %s", jobID, statusKey)
 		status, statusErr := s.redisClient.Get(ctx, statusKey).Result()
 
@@ -1487,7 +1491,7 @@ func (s *service) storeJobResult(ctx context.Context, result *JobResult) {
 }
 
 func (s *service) reportMetrics() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(MetricsReportInterval)
 	defer ticker.Stop()
 
 	for {
