@@ -25,7 +25,8 @@ COPY --from=builder /out/server               ./server
 COPY --from=builder /src/internal/config      ./internal/config
 COPY --from=builder /src/db/migrations        ./db/migrations
 
-EXPOSE 8080
+EXPOSE 8081
+EXPOSE 50051
 
 ENV APP_ENVIRONMENT=local
 CMD ["./server"]

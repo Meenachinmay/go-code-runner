@@ -119,6 +119,18 @@ func (s *service) logError(format string, v ...interface{}) {
 	s.logger.Printf("ERROR: "+format, v...)
 }
 
+func (s *service) execDockerCommand(args ...string) (string, error) {
+	cmd := exec.Command("docker", args...)
+	output, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(output)), err
+}
+
+func (s *service) execDockerCommandContext(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	output, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(output)), err
+}
+
 func NewService(cfg Config, logger *log.Logger, repo testcaserepo.TestCaseRepository, redisClient *redis.Client) Service {
 	logger.Printf("Initializing code executor service with config: WorkerCount=%d, MaxQueueSize=%d, ExecutionTimeout=%v, ResultTTL=%v",
 		cfg.WorkerCount, cfg.MaxQueueSize, cfg.ExecutionTimeout, cfg.ResultTTL)
@@ -178,6 +190,7 @@ func (s *service) spinRedisProcessor() {
 		numProcessors = s.config.WorkerCount / 5
 	}
 	s.logger.Printf("Starting %d Redis queue processor goroutines", numProcessors)
+	s.logInfo("Redis queue processor started")
 	for i := 0; i < numProcessors; i++ {
 		go s.processRedisQueue()
 	}
@@ -241,16 +254,19 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 
 	s.logger.Printf("Checking if Docker image %s is available locally...", imageName)
 
-	checkCmd := exec.Command("docker", "image", "inspect", imageName)
-	if err := checkCmd.Run(); err != nil {
+	_, err := s.execDockerCommand("image", "inspect", imageName)
+	if err != nil {
 		s.logger.Printf("Docker image %s not found locally, pulling...", imageName)
-		pullCmd := exec.Command("docker", "pull", imageName)
-		pullCmd.Stdout = os.Stdout
-		pullCmd.Stderr = os.Stderr
-		if err := pullCmd.Run(); err != nil {
+
+		// For pull command, we need to display the output to show progress
+		output, err := s.execDockerCommand("pull", imageName)
+		if err != nil {
 			s.logger.Printf("Failed to pull Docker image %s: %v", imageName, err)
 		} else {
 			s.logger.Printf("Docker image %s pulled successfully", imageName)
+			if s.logLevel >= LogLevelDebug {
+				s.logger.Printf("Pull output: %s", output)
+			}
 		}
 	} else {
 		s.logger.Printf("Docker image %s is already available locally", imageName)
@@ -262,16 +278,15 @@ func (s *service) ensureDockerImageAvailable(imageName string) {
 func (s *service) isContainerHealthy(containerID string) bool {
 	s.logDebug("Checking health of container %s", containerID[:12])
 
-	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
-	output, err := checkCmd.Output()
+	output, err := s.execDockerCommand("inspect", "-f", "{{.State.Running}}", containerID)
 
-	if err != nil || strings.TrimSpace(string(output)) != "true" {
+	if err != nil || output != "true" {
 		s.logDebug("Container %s is not running", containerID[:12])
 		return false
 	}
 
-	pingCmd := exec.Command("docker", "exec", containerID, "echo", "ping")
-	if err := pingCmd.Run(); err != nil {
+	_, err = s.execDockerCommand("exec", containerID, "echo", "ping")
+	if err != nil {
 		s.logDebug("Container %s is not responsive: %v", containerID[:12], err)
 		return false
 	}
@@ -310,11 +325,11 @@ func SavedMain() {
 
 func main() {
     reader := bufio.NewReader(os.Stdin)
-    
+
     line, _ := reader.ReadString('\n')
     var numTests int
     fmt.Sscanf(strings.TrimSpace(line), "%%d", &numTests)
-    
+
     for i := 0; i < numTests; i++ {
         var inputLines []string
         for {
@@ -324,41 +339,41 @@ func main() {
             }
             inputLines = append(inputLines, line)
         }
-        
+
         input := strings.Join(inputLines, "")
-        
+
         oldStdin := os.Stdin
         r, w, _ := os.Pipe()
         os.Stdin = r
-        
+
         // Write the input
         go func() {
             w.Write([]byte(input))
             w.Close()
         }()
-        
+
         oldStdout := os.Stdout
         rOut, wOut, _ := os.Pipe()
         os.Stdout = wOut
-        
+
         done := make(chan bool)
         var output string
-        
+
         go func() {
             buf := new(bytes.Buffer)
             io.Copy(buf, rOut)
             output = buf.String()
             done <- true
         }()
-        
+
         SavedMain()
-        
+
         wOut.Close()
         os.Stdout = oldStdout
         os.Stdin = oldStdin
-        
+
         <-done
-        
+
         fmt.Printf("---OUTPUT_START---\n%%s---OUTPUT_END---\n", output)
     }
 }
@@ -421,7 +436,7 @@ func (s *service) executeBatchTestCases(ctx context.Context, containerID string,
 	writeCodeCmd := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "tee", codeFile)
 	writeCodeCmd.Stdin = strings.NewReader(harnessCode)
 	if err := writeCodeCmd.Run(); err != nil {
-		exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+		s.execDockerCommand("exec", containerID, "rm", "-rf", execDir)
 		return nil, fmt.Errorf("failed to write code: %w", err)
 	}
 
@@ -432,7 +447,7 @@ func (s *service) executeBatchTestCases(ctx context.Context, containerID string,
 	dockerCompile.Stderr = &compileStderr
 
 	if err := dockerCompile.Run(); err != nil {
-		exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+		s.execDockerCommand("exec", containerID, "rm", "-rf", execDir)
 		return nil, fmt.Errorf("compilation failed: %s", compileStderr.String())
 	}
 
@@ -446,7 +461,7 @@ func (s *service) executeBatchTestCases(ctx context.Context, containerID string,
 
 	err := dockerRun.Run()
 
-	exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+	s.execDockerCommand("exec", containerID, "rm", "-rf", execDir)
 
 	if err != nil {
 		return nil, fmt.Errorf("execution failed: %w, stderr: %s", err, stderr.String())
@@ -550,7 +565,7 @@ func (s *service) executeCode(ctx context.Context, code string, language string,
 	result, err := s.executeInPooledContainer(ctx, containerID, code, language, input, runID)
 
 	go func() {
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		s.execDockerCommand("rm", "-f", containerID)
 	}()
 
 	if err != nil {
@@ -577,7 +592,7 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 	writeCodeCmd.Stdin = strings.NewReader(code)
 
 	if err := writeCodeCmd.Run(); err != nil {
-		exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+		s.execDockerCommand("exec", containerID, "rm", "-rf", execDir)
 		return nil, fmt.Errorf("failed to write code: %w", err)
 	}
 
@@ -589,7 +604,7 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 		writeInputCmd := exec.CommandContext(execCtx, "docker", "exec", "-i", containerID, "tee", inputFile)
 		writeInputCmd.Stdin = strings.NewReader(input)
 		if err := writeInputCmd.Run(); err != nil {
-			exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+			s.execDockerCommand("exec", containerID, "rm", "-rf", execDir)
 			return nil, fmt.Errorf("failed to write input: %w", err)
 		}
 		execCmd += " && cat input.txt | go run main.go"
@@ -605,7 +620,7 @@ func (s *service) executeInPooledContainer(ctx context.Context, containerID stri
 
 	err := dockerExec.Run()
 
-	exec.Command("docker", "exec", containerID, "rm", "-rf", execDir).Run()
+	s.execDockerCommand("exec", containerID, "rm", "-rf", execDir)
 
 	if execCtx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("execution timed out after %v", s.config.ExecutionTimeout)
@@ -641,21 +656,19 @@ func (s *service) createWarmContainer(index int) (string, error) {
 		"sh", "-c", "while true; do sleep 3600; done",
 	}
 
-	cmd := exec.Command("docker", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := s.execDockerCommand(args...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create warm container: %w, output: %s", err, output)
 	}
 
-	containerID := strings.TrimSpace(string(output))
+	containerID := output
 
 	time.Sleep(ContainerHealthCheckTimeout)
 
-	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
-	checkOutput, err := checkCmd.Output()
-	if err != nil || strings.TrimSpace(string(checkOutput)) != "true" {
+	checkOutput, err := s.execDockerCommand("inspect", "-f", "{{.State.Running}}", containerID)
+	if err != nil || checkOutput != "true" {
 
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		s.execDockerCommand("rm", "-f", containerID)
 		return "", fmt.Errorf("container failed to start properly")
 	}
 
@@ -679,10 +692,10 @@ func (s *service) prewarmContainer(containerID string) {
 	)
 	func main() {}`
 
-	cmd := exec.Command("docker", "exec", "-i", containerID, "sh", "-c",
+	_, err := s.execDockerCommand("exec", containerID, "sh", "-c",
 		fmt.Sprintf("echo '%s' | go build -o /dev/null -", prewarmCode))
 
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		s.logDebug("Failed to prewarm container %s: %v", containerID[:12], err)
 	} else {
 		s.logDebug("Successfully prewarmed container %s", containerID[:12])
@@ -698,10 +711,9 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 
 	select {
 	case containerID := <-s.containerPool.available:
-		checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
-		output, err := checkCmd.Output()
+		output, err := s.execDockerCommand("inspect", "-f", "{{.State.Running}}", containerID)
 
-		isRunning := err == nil && strings.TrimSpace(string(output)) == "true"
+		isRunning := err == nil && output == "true"
 
 		if !isRunning {
 			s.logDebug("Container %s is not running, creating replacement", containerID[:12])
@@ -709,7 +721,7 @@ func (s *service) getContainer(ctx context.Context) (string, error) {
 			s.containerPool.RecordFailure()
 
 			go func() {
-				exec.Command("docker", "rm", "-f", containerID).Run()
+				s.execDockerCommand("rm", "-f", containerID)
 			}()
 
 			newID, err := s.createWarmContainer(len(s.containerPool.containers))
@@ -744,16 +756,15 @@ func (s *service) createOnDemandContainer() (string, error) {
 }
 
 func (s *service) returnContainer(containerID string) {
-	checkCmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerID)
-	output, err := checkCmd.Output()
+	output, err := s.execDockerCommand("inspect", "-f", "{{.State.Running}}", containerID)
 
-	if err != nil || strings.TrimSpace(string(output)) != "true" {
+	if err != nil || output != "true" {
 		s.logDebug("Not returning dead container %s to pool", containerID[:12])
 
 		s.containerPool.RecordFailure()
 
 		go func() {
-			exec.Command("docker", "rm", "-f", containerID).Run()
+			s.execDockerCommand("rm", "-f", containerID)
 		}()
 		return
 	}
@@ -766,7 +777,7 @@ func (s *service) returnContainer(containerID string) {
 	default:
 		s.logDebug("Container pool full, removing container %s", containerID[:12])
 		go func() {
-			exec.Command("docker", "rm", "-f", containerID).Run()
+			s.execDockerCommand("rm", "-f", containerID)
 		}()
 	}
 }
@@ -882,12 +893,12 @@ func (s *service) maintainContainerPool() {
 								case s.containerPool.available <- containerID:
 									s.logDebug("Added new container to pool")
 								default:
-									exec.Command("docker", "rm", "-f", containerID).Run()
+									s.execDockerCommand("rm", "-f", containerID)
 								}
 							} else {
 								s.logDebug("Newly created container is unhealthy, removing")
 								s.containerPool.RecordFailure()
-								exec.Command("docker", "rm", "-f", containerID).Run()
+								s.execDockerCommand("rm", "-f", containerID)
 							}
 						} else {
 							s.logDebug("Failed to create new container: %v", err)
@@ -965,7 +976,7 @@ func (s *service) executeWithTestCasesInternal(ctx context.Context, code string,
 		s.returnContainer(containerID)
 	} else {
 		go func() {
-			exec.Command("docker", "rm", "-f", containerID).Run()
+			s.execDockerCommand("rm", "-f", containerID)
 		}()
 	}
 
@@ -1185,7 +1196,6 @@ func (s *service) startWorkers() {
 
 	for i := 0; i < s.config.WorkerCount; i++ {
 		s.workerWg.Add(1)
-		s.logger.Printf("Launching worker goroutine %d", i)
 		go s.worker(i)
 	}
 
@@ -1317,7 +1327,6 @@ func (s *service) processJob(job *ExecutionJob) {
 }
 
 func (s *service) processRedisQueue() {
-	s.logInfo("Redis queue processor started")
 	jobsProcessed := 0
 	startTime := time.Now()
 
@@ -1536,14 +1545,13 @@ func (s *service) Shutdown() {
 	}
 
 	s.logger.Println("Finding all executor-pool containers...")
-	findCmd := exec.Command("docker", "ps", "-q", "--filter", "name=executor-pool")
-	output, err := findCmd.Output()
+	output, err := s.execDockerCommand("ps", "-q", "--filter", "name=executor-pool")
 
 	allContainers := []string{}
 	if err != nil {
 		s.logger.Printf("Error finding executor-pool containers: %v", err)
 	} else {
-		containerIDs := strings.Split(strings.TrimSpace(string(output)), "\n")
+		containerIDs := strings.Split(output, "\n")
 		for _, id := range containerIDs {
 			if id != "" {
 				allContainers = append(allContainers, id)
@@ -1574,8 +1582,8 @@ func (s *service) Shutdown() {
 		go func(id string) {
 			defer wg.Done()
 			s.logger.Printf("Removing container %s", id[:12])
-			cmd := exec.Command("docker", "rm", "-f", id)
-			if output, err := cmd.CombinedOutput(); err != nil {
+			output, err := s.execDockerCommand("rm", "-f", id)
+			if err != nil {
 				s.logger.Printf("Error removing container %s: %v, output: %s", id[:12], err, output)
 			} else {
 				s.logger.Printf("Container %s removed successfully", id[:12])

@@ -98,3 +98,6 @@ test-load-5m:
 
 test-monitor:
 	go run cmd/monitor/main.go
+
+grpc:
+	protoc --go_out=. --go-grpc_out=. proto/executor/v1/executor.proto proto/problems/v1/problems.proto

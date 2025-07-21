@@ -20,10 +20,9 @@ func NewRouter(
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	// Configure CORS middleware
 	config := cors.DefaultConfig()
 	config.AllowOrigins = []string{"http://localhost:5173"}
-	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+	config.AllowMethods = []string{"GET", "POST"}
 	config.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
 	config.AllowCredentials = true
 	r.Use(cors.New(config))
@@ -38,9 +37,6 @@ func NewRouter(
 		v1.POST("/execute", handler.MakeExecuteHandler(execSvc))
 
 		v1.GET("/execute/job/:job_id", handler.MakeJobStatusHandler(execSvc))
-
-		v1.GET("/problems", handler.MakeListProblemsHandler(problemService))
-		v1.GET("/problems/:id", handler.MakeGetProblemHandler(problemService))
 
 		companies := v1.Group("/companies")
 		{
