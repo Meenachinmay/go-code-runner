@@ -12,6 +12,7 @@ import (
 
 type rawConfig struct {
 	ServerPort              string `yaml:"server_port"`
+	GRPCPort				string `yaml:"grpc_port"`
 	ExecutionTimeoutSeconds int    `yaml:"execution_timeout_seconds"`
 	Postgres                struct {
 		Host     string `yaml:"host"`
@@ -25,6 +26,7 @@ type rawConfig struct {
 
 type Config struct {
 	ServerPort string
+	GRPCPort   string
 	DBConnStr  string
 
 	RedisAddr     string
@@ -64,6 +66,9 @@ func Load() (*Config, error) {
 
 	if v := os.Getenv("SERVER_PORT"); v != "" {
 		raw.ServerPort = v
+	}
+	if v := os.Getenv("GRPC_PORT"); v != "" {
+		raw.GRPCPort = v
 	}
 	if v := os.Getenv("EXECUTION_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -114,6 +119,7 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ServerPort:           raw.ServerPort,
+		GRPCPort:             raw.GRPCPort,
 		DBConnStr:            connStr,
 		ExecutionTimeout:     time.Duration(raw.ExecutionTimeoutSeconds) * time.Second,
 		RedisAddr:            redisAddr,
@@ -125,6 +131,6 @@ func Load() (*Config, error) {
 		ContainerPoolSize:    50,
 		HTTPWorkerCount:      200,
 		HTTPMaxQueueSize:     10000,
-		FrontendURL:          "http://localhost:8080",
+		FrontendURL:          "http://localhost:5173",
 	}, nil
 }

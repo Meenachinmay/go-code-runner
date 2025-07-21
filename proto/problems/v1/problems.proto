@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package problems.v1;
+
+option go_package = "go-code-runner-microservice/proto/problems/v1;problemspb";
+
+import "google/protobuf/timestamp.proto";
+
+service ProblemService {
+  rpc GetProblem(GetProblemRequest) returns (GetProblemResponse);
+  rpc ListProblems(ListProblemsRequest) returns (ListProblemsResponse);
+  rpc GetTestCasesByProblemID(GetTestCasesByProblemIDRequest) returns (GetTestCasesByProblemIDResponse);
+}
+
+message GetProblemRequest {
+  int32 id = 1;
+}
+
+message GetProblemResponse {
+  Problem problem = 1;
+}
+
+message ListProblemsRequest {}
+
+message ListProblemsResponse {
+  repeated Problem problems = 1;
+}
+
+message Problem {
+  int32 id = 1;
+  string title = 2;
+  string description = 3;
+  string difficulty = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message TestCase {
+  int32 id = 1;
+  int32 problem_id = 2;
+  string input = 3;
+  string expected_output = 4;
+  bool is_hidden = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message GetTestCasesByProblemIDRequest {
+  int32 problem_id = 1;
+}
+
+message GetTestCasesByProblemIDResponse {
+  repeated TestCase test_cases = 1;
+}

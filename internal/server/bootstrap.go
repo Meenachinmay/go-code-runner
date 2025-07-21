@@ -2,14 +2,15 @@ package server
 
 import (
 	"context"
-	"errors"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
 	"go-code-runner/internal/repository"
 	"go-code-runner/internal/service/coding_test"
 	"go-code-runner/internal/service/problems"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,10 +18,13 @@ import (
 
 	"go-code-runner/internal/code_executor"
 	"go-code-runner/internal/config"
-	"go-code-runner/internal/handler"
 	"go-code-runner/internal/middleware"
 	"go-code-runner/internal/platform/database"
-	"go-code-runner/internal/service/company"
+
+	executorpb "go-code-runner/go-code-runner-microservice/proto/executor/v1"
+	problemspb "go-code-runner/go-code-runner-microservice/proto/problems/v1"
+	grpcserver "go-code-runner/internal/grpc"
+	grpcproblems "go-code-runner/internal/service/grpc"
 )
 
 func Run() {
@@ -79,34 +83,32 @@ func Run() {
 
 	executorService := code_executor.NewService(executorConfig, logger, repo, redisClient)
 
-	companyService := company.New(repo)
-	companyHandler := handler.NewCompanyHandler(companyService)
 	problemService := problems.New(repo)
-	codingTestService := coding_test.New(repo, repo, repo, "http://localhost:8080")
-	codingTestHandler := handler.NewCodingTestHandler(codingTestService)
+	_ = coding_test.New(repo, repo, repo, "http://localhost:8080")
 
 	middleware.InitAPIKeyAuth(dbpool)
 
-	r := NewRouter(dbpool, problemService, executorService, companyHandler, codingTestHandler)
-
-	logger.Printf("Initializing HTTP worker pool with %d workers and queue size %d",
-		cfg.HTTPWorkerCount, cfg.HTTPMaxQueueSize)
-	workerPool := NewWorkerPool(cfg.HTTPWorkerCount, cfg.HTTPMaxQueueSize, logger)
-	workerPool.Start()
-
-	wrappedHandler := WorkerPoolHandler(r, workerPool)
-
-	addr := ":" + cfg.ServerPort
-	logger.Printf("starting HTTP server on %s", addr)
-
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: wrappedHandler,
+	// grpc server
+	grpcAddr := cfg.GRPCPort
+	lis, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		logger.Fatalf("failed to listen on %s: %v", grpcAddr, err)
 	}
 
+	grpcServer := grpc.NewServer()
+
+	executorServer := grpcserver.NewServer(executorService, logger)
+	executorpb.RegisterExecutorServiceServer(grpcServer, executorServer)
+
+	problemServer := grpcproblems.NewProblemServer(problemService, logger)
+	problemspb.RegisterProblemServiceServer(grpcServer, problemServer)
+
+	reflection.Register(grpcServer)
+
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(http.ErrServerClosed, err) {
-			logger.Fatalf("server error: %v", err)
+		logger.Printf("Staerting gRPC server on %s", grpcAddr)
+		if err := grpcServer.Serve(lis); err != nil {
+			logger.Fatalf("failed to serve gRPC server: %v", err)
 		}
 	}()
 
@@ -118,16 +120,9 @@ func Run() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	logger.Println("Shutting down gRPC server...")
+	grpcServer.GracefulStop()
+
 	logger.Println("Shutting down executor service...")
 	executorService.Shutdown()
-
-	logger.Println("Shutting down HTTP server...")
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Fatalf("Server forced to shutdown: %v", err)
-	}
-
-	logger.Println("Shutting down HTTP worker pool...")
-	workerPool.Shutdown(ctx)
-
-	logger.Println("Server exiting")
 }
